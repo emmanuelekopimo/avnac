@@ -8,6 +8,10 @@ import {
   Tick02Icon,
 } from '@hugeicons/core-free-icons'
 import { useEffect, useRef, useState } from 'react'
+import {
+  useStablePickPanel,
+  useViewportAwarePopoverPlacement,
+} from '../hooks/use-viewport-aware-popover'
 import type {
   ArrowLineStyle,
   ArrowPathType,
@@ -76,7 +80,24 @@ export default function ShapeOptionsToolbar({
   const [strokePanelOpen, setStrokePanelOpen] = useState(false)
   const [lineTypePanelOpen, setLineTypePanelOpen] = useState(false)
   const arrowRootRef = useRef<HTMLDivElement>(null)
+  const strokePanelRef = useRef<HTMLDivElement>(null)
+  const lineTypePanelRef = useRef<HTMLDivElement>(null)
   const arrowColorInputRef = useRef<HTMLInputElement>(null)
+
+  const arrowPopoverOpen = strokePanelOpen || lineTypePanelOpen
+  const arrowPopoverEstimateH = strokePanelOpen ? 300 : 160
+  const pickArrowPanel = useStablePickPanel(
+    strokePanelOpen,
+    strokePanelRef,
+    lineTypePanelRef,
+  )
+  const { openUpward: arrowPopoverUp, shiftX: arrowPopoverShiftX } =
+    useViewportAwarePopoverPlacement(
+      arrowPopoverOpen,
+      arrowRootRef,
+      arrowPopoverEstimateH,
+      pickArrowPanel,
+    )
 
   useEffect(() => {
     if (!strokePanelOpen && !lineTypePanelOpen) return
@@ -246,10 +267,15 @@ export default function ShapeOptionsToolbar({
 
         {lineTypePanelOpen ? (
           <div
+            ref={lineTypePanelRef}
             role="dialog"
             aria-label="Line type"
+            style={{
+              transform: `translateX(calc(-50% + ${arrowPopoverShiftX}px))`,
+            }}
             className={[
-              'absolute bottom-full left-1/2 z-[60] mb-2 min-w-[11rem] -translate-x-1/2 px-2 py-2',
+              'absolute left-1/2 z-[60] min-w-[11rem] px-2 py-2',
+              arrowPopoverUp ? 'bottom-full mb-2' : 'top-full mt-2',
               floatingToolbarPopoverClass,
             ].join(' ')}
           >
@@ -306,10 +332,15 @@ export default function ShapeOptionsToolbar({
 
         {strokePanelOpen ? (
           <div
+            ref={strokePanelRef}
             role="dialog"
             aria-label="Stroke style options"
+            style={{
+              transform: `translateX(calc(-50% + ${arrowPopoverShiftX}px))`,
+            }}
             className={[
-              'absolute bottom-full left-1/2 z-[60] mb-2 w-[min(18rem,calc(100vw-2rem))] -translate-x-1/2 px-4 py-3.5',
+              'absolute left-1/2 z-[60] w-[min(18rem,calc(100vw-2rem))] px-4 py-3.5',
+              arrowPopoverUp ? 'bottom-full mb-2' : 'top-full mt-2',
               floatingToolbarPopoverClass,
             ].join(' ')}
           >
