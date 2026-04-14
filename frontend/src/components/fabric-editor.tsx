@@ -3,18 +3,20 @@ import {
   ArrowDown01Icon,
   BackgroundIcon,
   Delete02Icon,
-  Download01Icon,
   TextFontIcon,
 } from '@hugeicons/core-free-icons'
 import type { Canvas, FabricObject, IText } from 'fabric'
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useReducer,
   useRef,
   useState,
 } from 'react'
+import { useViewportAwarePopoverPlacement } from '../hooks/use-viewport-aware-popover'
 import {
   installCanvaArrowControls,
   installCanvaLineControls,
@@ -41,11 +43,21 @@ import {
   type AvnacShapeMeta,
 } from '../lib/avnac-shape-meta'
 import {
+  applyBgValueToFill,
+  applyBgValueToStroke,
+  bgValueFromFabricFill,
+  bgValueFromFabricStroke,
+  bgValueSolidFallback,
+  getAvnacStroke,
+  setAvnacStroke,
+} from '../lib/avnac-fill-paint'
+import {
   disableTextboxAutoWidth,
   enableTextboxAutoWidth,
   fitTextboxWidthToContent,
   textboxUsesAutoWidth,
 } from '../lib/avnac-textbox-autowidth'
+import { linearGradientForBox } from '../lib/fabric-linear-gradient'
 import { loadGoogleFontFamily } from '../lib/load-google-font'
 import ShapeOptionsToolbar from './shape-options-toolbar'
 import ShapesPopover, {
@@ -55,9 +67,15 @@ import ShapesPopover, {
 } from './shapes-popover'
 import TextFormatToolbar from './text-format-toolbar'
 import type { TextFormatToolbarValues } from './text-format-toolbar'
+import BackgroundPopover, {
+  bgValueToSwatch,
+  type BgValue,
+} from './background-popover'
 
 const ARTBOARD_W = 4000
 const ARTBOARD_H = 4000
+
+const DEFAULT_PAINT: BgValue = { type: 'solid', color: '#262626' }
 
 const FIT_PADDING = 32
 const FONT_SIZE = Math.round(ARTBOARD_W * 0.04)
@@ -115,7 +133,7 @@ function primaryFontFamily(css: string) {
 }
 
 function readTextFormat(obj: IText): TextFormatToolbarValues {
-  const fill = typeof obj.fill === 'string' ? obj.fill : '#262626'
+  const fillStyle = bgValueFromFabricFill(obj)
   const ta = obj.textAlign ?? 'left'
   const textAlign =
     ta === 'center' || ta === 'right' || ta === 'justify' ? ta : 'left'
@@ -128,7 +146,7 @@ function readTextFormat(obj: IText): TextFormatToolbarValues {
   return {
     fontFamily: primaryFontFamily(String(obj.fontFamily ?? 'Inter')),
     fontSize: obj.fontSize ?? FONT_SIZE,
-    fill,
+    fillStyle,
     textAlign,
     bold,
     italic: obj.fontStyle === 'italic',
@@ -136,7 +154,16 @@ function readTextFormat(obj: IText): TextFormatToolbarValues {
   }
 }
 
-export default function FabricEditor() {
+export type FabricEditorHandle = {
+  exportPng: () => void
+}
+
+type FabricEditorProps = {
+  onReadyChange?: (ready: boolean) => void
+}
+
+const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
+  function FabricEditor({ onReadyChange }, ref) {
   const canvasElRef = useRef<HTMLCanvasElement>(null)
   const artboardFrameRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -147,13 +174,12 @@ export default function FabricEditor() {
   const bottomToolbarRef = useRef<HTMLDivElement>(null)
   const fabricCanvasRef = useRef<Canvas | null>(null)
   const fabricModRef = useRef<typeof import('fabric') | null>(null)
-  const fillInputRef = useRef<HTMLInputElement>(null)
-  const bgInputRef = useRef<HTMLInputElement>(null)
 
   const [ready, setReady] = useState(false)
   const [fitZoomPercent, setFitZoomPercent] = useState<number | null>(null)
-  const [artboardBackground, setArtboardBackground] = useState('#ffffff')
-  const [selectedFill, setSelectedFill] = useState('#262626')
+  const [bgValue, setBgValue] = useState<BgValue>({ type: 'solid', color: '#ffffff' })
+  const [bgPopoverOpen, setBgPopoverOpen] = useState(false)
+  const [selectedPaint, setSelectedPaint] = useState<BgValue>(DEFAULT_PAINT)
   const [hasObjectSelected, setHasObjectSelected] = useState(false)
   const [canvasBodySelected, setCanvasBodySelected] = useState(false)
   const [, selectionTick] = useReducer((n: number) => n + 1, 0)
@@ -176,8 +202,25 @@ export default function FabricEditor() {
   } | null>(null)
   const [shapeToolbarModel, setShapeToolbarModel] = useState<{
     meta: AvnacShapeMeta
-    arrowStrokeColor?: string
+    paint: BgValue
   } | null>(null)
+
+  const backgroundPopoverAnchorRef = useRef<HTMLDivElement>(null)
+  const backgroundPopoverPanelRef = useRef<HTMLDivElement>(null)
+  const pickBackgroundPopoverPanel = useCallback(
+    () => backgroundPopoverPanelRef.current,
+    [],
+  )
+  const {
+    openUpward: backgroundPopoverOpenUpward,
+    shiftX: backgroundPopoverShiftX,
+  } = useViewportAwarePopoverPlacement(
+    bgPopoverOpen,
+    backgroundPopoverAnchorRef,
+    440,
+    pickBackgroundPopoverPanel,
+    'center',
+  )
 
   const syncBackgroundBarPosition = useCallback(() => {
     const frame = artboardFrameRef.current
@@ -240,23 +283,30 @@ export default function FabricEditor() {
     const targets = canvas.getActiveObjects()
     const obj = canvas.getActiveObject()
     const meta = getAvnacShapeMeta(obj)
-    if (
-      targets.length !== 1 ||
-      !obj ||
-      !meta ||
-      (meta.kind !== 'polygon' &&
-        meta.kind !== 'star' &&
-        meta.kind !== 'arrow')
-    ) {
+    const shapeBarKind =
+      meta &&
+      (meta.kind === 'rect' ||
+        meta.kind === 'ellipse' ||
+        meta.kind === 'polygon' ||
+        meta.kind === 'star' ||
+        meta.kind === 'line' ||
+        meta.kind === 'arrow')
+    if (targets.length !== 1 || !obj || !shapeBarKind || !meta) {
       setShapeToolbarLayout(null)
       setShapeToolbarModel(null)
       return
     }
-    const arrowStrokeColor =
-      meta.kind === 'arrow' && obj instanceof mod.Group
-        ? arrowDisplayColor(obj)
-        : undefined
-    setShapeToolbarModel({ meta: { ...meta }, arrowStrokeColor })
+    let paint: BgValue
+    if (meta.kind === 'line') {
+      paint = bgValueFromFabricStroke(obj)
+    } else if (meta.kind === 'arrow' && obj instanceof mod.Group) {
+      paint =
+        getAvnacStroke(obj) ??
+        ({ type: 'solid', color: arrowDisplayColor(obj) } satisfies BgValue)
+    } else {
+      paint = bgValueFromFabricFill(obj)
+    }
+    setShapeToolbarModel({ meta: { ...meta }, paint })
     if (meta.kind === 'arrow' && obj instanceof mod.Group) {
       syncAvnacArrowCurveControlVisibility(obj)
     }
@@ -284,9 +334,9 @@ export default function FabricEditor() {
         obj.set('fontFamily', patch.fontFamily)
       }
       if (patch.fontSize !== undefined) obj.set('fontSize', patch.fontSize)
-      if (patch.fill !== undefined) {
-        obj.set('fill', patch.fill)
-        setSelectedFill(patch.fill)
+      if (patch.fillStyle !== undefined) {
+        applyBgValueToFill(mod, obj, patch.fillStyle)
+        setSelectedPaint(patch.fillStyle)
       }
       if (patch.textAlign !== undefined) obj.set('textAlign', patch.textAlign)
       if (patch.bold !== undefined)
@@ -306,24 +356,61 @@ export default function FabricEditor() {
     [syncTextToolbar],
   )
 
+  const applyPaintToSelection = useCallback(
+    (v: BgValue) => {
+      setSelectedPaint(v)
+      const canvas = fabricCanvasRef.current
+      const mod = fabricModRef.current
+      if (!canvas || !mod) return
+      const obj = canvas.getActiveObject() as FabricObject | undefined
+      if (!obj) return
+      const meta = getAvnacShapeMeta(obj)
+
+      if (obj instanceof mod.Line || meta?.kind === 'line') {
+        applyBgValueToStroke(mod, obj, v)
+      } else if (obj instanceof mod.Group && meta?.kind === 'arrow') {
+        setAvnacStroke(obj, v)
+        const hex = bgValueSolidFallback(v)
+        const parts = getArrowParts(obj)
+        if (parts) {
+          parts.shaft.set('stroke', hex)
+          parts.head.set('fill', hex)
+        }
+      } else if (obj instanceof mod.IText) {
+        applyBgValueToFill(mod, obj, v)
+      } else {
+        applyBgValueToFill(mod, obj, v)
+      }
+
+      canvas.requestRenderAll()
+      syncTextToolbar()
+      syncShapeToolbar()
+    },
+    [syncTextToolbar, syncShapeToolbar],
+  )
+
   const syncSelection = useCallback(() => {
     const canvas = fabricCanvasRef.current
     const mod = fabricModRef.current
     if (!canvas) return
     const obj = canvas.getActiveObject()
     setHasObjectSelected(!!obj)
-    if (obj && mod && obj instanceof mod.Line) {
-      const s = obj.stroke
-      if (typeof s === 'string') setSelectedFill(s)
+    if (!obj || !mod) {
+      selectionTick()
+      return
+    }
+    if (obj instanceof mod.Line) {
+      setSelectedPaint(bgValueFromFabricStroke(obj))
     } else if (
-      obj &&
-      mod &&
       obj instanceof mod.Group &&
       getAvnacShapeMeta(obj)?.kind === 'arrow'
     ) {
-      setSelectedFill(arrowDisplayColor(obj))
-    } else if (obj && typeof obj.fill === 'string') {
-      setSelectedFill(obj.fill)
+      setSelectedPaint(
+        getAvnacStroke(obj) ??
+          ({ type: 'solid', color: arrowDisplayColor(obj) } satisfies BgValue),
+      )
+    } else {
+      setSelectedPaint(bgValueFromFabricFill(obj))
     }
     selectionTick()
   }, [])
@@ -335,19 +422,20 @@ export default function FabricEditor() {
     const obj = canvas.getActiveObject()
     if (!obj) return
     if (obj instanceof mod.Line) {
-      const s = obj.stroke
-      setSelectedFill(typeof s === 'string' ? s : '#262626')
+      setSelectedPaint(bgValueFromFabricStroke(obj))
       return
     }
     if (
       obj instanceof mod.Group &&
       getAvnacShapeMeta(obj)?.kind === 'arrow'
     ) {
-      setSelectedFill(arrowDisplayColor(obj))
+      setSelectedPaint(
+        getAvnacStroke(obj) ??
+          ({ type: 'solid', color: arrowDisplayColor(obj) } satisfies BgValue),
+      )
       return
     }
-    const fill = typeof obj.fill === 'string' ? obj.fill : '#262626'
-    setSelectedFill(fill)
+    setSelectedPaint(bgValueFromFabricFill(obj))
   }, [])
 
   const fitArtboardToViewport = useCallback(() => {
@@ -377,10 +465,21 @@ export default function FabricEditor() {
 
   useEffect(() => {
     const canvas = fabricCanvasRef.current
-    if (!canvas || !ready) return
-    canvas.backgroundColor = artboardBackground
+    const mod = fabricModRef.current
+    if (!canvas || !mod || !ready) return
+    if (bgValue.type === 'solid') {
+      canvas.backgroundColor = bgValue.color
+    } else {
+      canvas.backgroundColor = linearGradientForBox(
+        mod,
+        bgValue.stops,
+        bgValue.angle,
+        ARTBOARD_W,
+        ARTBOARD_H,
+      )
+    }
     canvas.requestRenderAll()
-  }, [artboardBackground, ready])
+  }, [bgValue, ready])
 
   useEffect(() => {
     const el = canvasElRef.current
@@ -446,7 +545,7 @@ export default function FabricEditor() {
       }
       const onClear = () => {
         setHasObjectSelected(false)
-        setSelectedFill('#262626')
+        setSelectedPaint(DEFAULT_PAINT)
         setTextToolbarValues(null)
         setTextToolbarLayout(null)
         setShapeToolbarLayout(null)
@@ -604,6 +703,20 @@ export default function FabricEditor() {
   }, [shapesPopoverOpen])
 
   useEffect(() => {
+    if (!bgPopoverOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (backgroundBarRef.current?.contains(e.target as Node)) return
+      setBgPopoverOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [bgPopoverOpen])
+
+  useEffect(() => {
+    if (!canvasBodySelected) setBgPopoverOpen(false)
+  }, [canvasBodySelected])
+
+  useEffect(() => {
     if (!ready) return
 
     const onDocMouseDown = (e: MouseEvent) => {
@@ -640,12 +753,13 @@ export default function FabricEditor() {
       originY: 'center',
       width: 20,
       fontSize: FONT_SIZE,
-      fill: selectedFill,
+      fill: bgValueSolidFallback(selectedPaint),
       fontFamily: 'Inter',
     })
     t.setControlsVisibility({ mt: false, mb: false })
     enableTextboxAutoWidth(t)
     fitTextboxWidthToContent(t)
+    applyBgValueToFill(mod, t, selectedPaint)
     canvas.add(t)
     canvas.setActiveObject(t)
     canvas.requestRenderAll()
@@ -661,11 +775,12 @@ export default function FabricEditor() {
       top: ARTBOARD_H / 2 - RECT_H / 2,
       width: RECT_W,
       height: RECT_H,
-      fill: selectedFill,
+      fill: bgValueSolidFallback(selectedPaint),
       rx: RECT_RX,
       ry: RECT_RX,
     })
     setAvnacShapeMeta(r, { kind: 'rect' })
+    applyBgValueToFill(mod, r, selectedPaint)
     canvas.add(r)
     canvas.setActiveObject(r)
     canvas.requestRenderAll()
@@ -682,11 +797,12 @@ export default function FabricEditor() {
       top: ARTBOARD_H / 2,
       rx: r,
       ry: r,
-      fill: selectedFill,
+      fill: bgValueSolidFallback(selectedPaint),
       originX: 'center',
       originY: 'center',
     })
     setAvnacShapeMeta(e, { kind: 'ellipse' })
+    applyBgValueToFill(mod, e, selectedPaint)
     canvas.add(e)
     canvas.setActiveObject(e)
     canvas.requestRenderAll()
@@ -702,11 +818,12 @@ export default function FabricEditor() {
     const p = new mod.Polygon(pts, {
       left: ARTBOARD_W / 2,
       top: ARTBOARD_H / 2,
-      fill: selectedFill,
+      fill: bgValueSolidFallback(selectedPaint),
       originX: 'center',
       originY: 'center',
     })
     setAvnacShapeMeta(p, { kind: 'polygon', polygonSides: sides })
+    applyBgValueToFill(mod, p, selectedPaint)
     canvas.add(p)
     canvas.setActiveObject(p)
     canvas.requestRenderAll()
@@ -722,11 +839,12 @@ export default function FabricEditor() {
     const p = new mod.Polygon(pts, {
       left: ARTBOARD_W / 2,
       top: ARTBOARD_H / 2,
-      fill: selectedFill,
+      fill: bgValueSolidFallback(selectedPaint),
       originX: 'center',
       originY: 'center',
     })
     setAvnacShapeMeta(p, { kind: 'star', starPoints: points })
+    applyBgValueToFill(mod, p, selectedPaint)
     canvas.add(p)
     canvas.setActiveObject(p)
     canvas.requestRenderAll()
@@ -741,13 +859,14 @@ export default function FabricEditor() {
     const line = new mod.Line([-half, 0, half, 0], {
       left: ARTBOARD_W / 2,
       top: ARTBOARD_H / 2,
-      stroke: selectedFill,
+      stroke: bgValueSolidFallback(selectedPaint),
       strokeWidth: Math.max(8, RECT_RX * 2.5),
       strokeLineCap: 'round',
       originX: 'center',
       originY: 'center',
     })
     setAvnacShapeMeta(line, { kind: 'line' })
+    applyBgValueToStroke(mod, line, selectedPaint)
     installCanvaLineControls(line)
     canvas.add(line)
     canvas.setActiveObject(line)
@@ -771,8 +890,9 @@ export default function FabricEditor() {
     const g = createArrowGroup(mod, x1, y1, x2, y2, {
       strokeWidth: strokeW,
       headFrac: head,
-      color: selectedFill,
+      color: bgValueSolidFallback(selectedPaint),
     })
+    setAvnacStroke(g, selectedPaint)
     setAvnacShapeMeta(g, {
       kind: 'arrow',
       arrowHead: head,
@@ -980,7 +1100,7 @@ export default function FabricEditor() {
     selectionTick()
   }
 
-  function exportPng() {
+  const exportPng = useCallback(() => {
     const canvas = fabricCanvasRef.current
     if (!canvas) return
     const data = canvas.toDataURL({ format: 'png', multiplier: 1 })
@@ -988,34 +1108,18 @@ export default function FabricEditor() {
     a.href = data
     a.download = 'avnac-design.png'
     a.click()
-  }
+  }, [])
 
-  function onObjectFillChange(hex: string) {
-    setSelectedFill(hex)
-    const canvas = fabricCanvasRef.current
-    const mod = fabricModRef.current
-    if (!canvas || !mod) return
-    const obj = canvas.getActiveObject() as FabricObject | undefined
-    if (!obj) return
-    if (obj instanceof mod.Line) {
-      obj.set('stroke', hex)
-    } else if (
-      obj instanceof mod.Group &&
-      getAvnacShapeMeta(obj)?.kind === 'arrow'
-    ) {
-      const parts = getArrowParts(obj)
-      if (parts) {
-        parts.shaft.set('stroke', hex)
-        parts.head.set('fill', hex)
-      }
-    } else {
-      obj.set('fill', hex)
-    }
-    canvas.requestRenderAll()
-  }
+  useImperativeHandle(ref, () => ({ exportPng }), [exportPng])
 
-  function onBackgroundPicked(hex: string) {
-    setArtboardBackground(hex)
+  const onReadyChangeRef = useRef(onReadyChange)
+  onReadyChangeRef.current = onReadyChange
+  useEffect(() => {
+    onReadyChangeRef.current?.(ready)
+  }, [ready])
+
+  function onBackgroundPicked(v: BgValue) {
+    setBgValue(v)
   }
 
   return (
@@ -1116,42 +1220,6 @@ export default function FabricEditor() {
           >
             <HugeiconsIcon icon={Delete02Icon} size={20} strokeWidth={1.75} />
           </button>
-          <button
-            type="button"
-            disabled={!ready}
-            className={toolbarIconBtn(!ready)}
-            onClick={exportPng}
-            aria-label="Export PNG"
-            title="Export PNG"
-          >
-            <HugeiconsIcon
-              icon={Download01Icon}
-              size={20}
-              strokeWidth={1.75}
-            />
-          </button>
-          <button
-            type="button"
-            disabled={!ready}
-            className={`${toolbarIconBtn(!ready)} relative`}
-            onClick={() => fillInputRef.current?.click()}
-            aria-label="Fill color"
-            title="Fill color"
-          >
-            <span
-              className="h-5 w-5 rounded-md border border-black/15 shadow-inner"
-              style={{ backgroundColor: selectedFill }}
-            />
-            <input
-              ref={fillInputRef}
-              type="color"
-              value={selectedFill}
-              onChange={(e) => onObjectFillChange(e.target.value)}
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden
-            />
-          </button>
 
           {!ready ? (
             <span className="px-3 text-xs text-[var(--text-muted)]">
@@ -1179,34 +1247,46 @@ export default function FabricEditor() {
             transform: 'translate3d(-50%, -100%, 0)',
           }}
         >
-          <div className="flex items-center rounded-full border border-black/[0.08] bg-white/90 px-2 py-1 shadow-[0_4px_20px_rgba(0,0,0,0.08)] backdrop-blur-md">
-            <button
-              type="button"
-              className={backgroundTopBtn(false)}
-              onClick={() => bgInputRef.current?.click()}
-              aria-label="Page background color"
-              title="Background"
-            >
-              <HugeiconsIcon
-                icon={BackgroundIcon}
-                size={20}
-                strokeWidth={1.75}
-              />
-              <span
-                className="h-5 w-5 shrink-0 rounded-md border border-black/15 shadow-inner"
-                style={{ backgroundColor: artboardBackground }}
-              />
-              <span className="pr-0.5">Background</span>
-            </button>
-            <input
-              ref={bgInputRef}
-              type="color"
-              value={artboardBackground}
-              onChange={(e) => onBackgroundPicked(e.target.value)}
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden
-            />
+          <div ref={backgroundPopoverAnchorRef} className="relative">
+            <div className="flex items-center rounded-full border border-black/[0.08] bg-white/90 px-2 py-1 shadow-[0_4px_20px_rgba(0,0,0,0.08)] backdrop-blur-md">
+              <button
+                type="button"
+                className={backgroundTopBtn(false)}
+                onClick={() => setBgPopoverOpen((o) => !o)}
+                aria-label="Page background"
+                aria-expanded={bgPopoverOpen}
+                aria-haspopup="dialog"
+                title="Background"
+              >
+                <HugeiconsIcon
+                  icon={BackgroundIcon}
+                  size={20}
+                  strokeWidth={1.75}
+                />
+                <span
+                  className="h-5 w-5 shrink-0 rounded-md border border-black/15 shadow-inner"
+                  style={bgValueToSwatch(bgValue)}
+                />
+                <span className="pr-0.5">Background</span>
+              </button>
+            </div>
+            {bgPopoverOpen ? (
+              <div
+                ref={backgroundPopoverPanelRef}
+                className={[
+                  'absolute left-1/2 z-[60]',
+                  backgroundPopoverOpenUpward ? 'bottom-full mb-2' : 'top-full mt-2',
+                ].join(' ')}
+                style={{
+                  transform: `translateX(calc(-50% + ${backgroundPopoverShiftX}px))`,
+                }}
+              >
+                <BackgroundPopover
+                  value={bgValue}
+                  onChange={(v) => onBackgroundPicked(v)}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -1240,10 +1320,10 @@ export default function FabricEditor() {
         >
           <ShapeOptionsToolbar
             meta={shapeToolbarModel.meta}
-            arrowStrokeColor={shapeToolbarModel.arrowStrokeColor}
+            paintValue={shapeToolbarModel.paint}
+            onPaintChange={applyPaintToSelection}
             onPolygonSides={applyPolygonSides}
             onStarPoints={applyStarPoints}
-            onArrowStrokeColor={onObjectFillChange}
             onArrowLineStyle={applyArrowLineStyle}
             onArrowRoundedEnds={applyArrowRoundedEnds}
             onArrowStrokeWidth={applyArrowStrokeWidth}
@@ -1253,4 +1333,7 @@ export default function FabricEditor() {
       ) : null}
     </div>
   )
-}
+},
+)
+
+export default FabricEditor
