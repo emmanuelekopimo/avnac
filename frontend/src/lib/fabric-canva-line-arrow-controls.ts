@@ -10,8 +10,12 @@ import {
   type TransformActionHandler,
 } from 'fabric'
 import {
+  arrowCurveMidHandleGroupLocal,
   arrowDisplayColor,
+  arrowShaftLen,
   arrowTailTipLocal,
+  curveParamsFromDragPoint,
+  effectiveShaftBulge,
   layoutArrowGroup,
 } from './avnac-stroke-arrow'
 import { getAvnacShapeMeta, setAvnacShapeMeta } from './avnac-shape-meta'
@@ -21,8 +25,8 @@ const MODIFY_POLY = 'modifyPoly' as ModifyPolyEv
 
 function canvaEndpointChrome(o: InteractiveFabricObject) {
   o.hasBorders = false
-  o.cornerSize = 28
-  o.touchCornerSize = 48
+  o.cornerSize = 40
+  o.touchCornerSize = 64
   o.transparentCorners = false
   o.cornerStyle = 'circle'
 }
@@ -166,11 +170,133 @@ function arrowEndpointAction(which: 'tail' | 'tip'): TransformActionHandler {
       lineStyle: meta.arrowLineStyle,
       roundedEnds: meta.arrowRoundedEnds,
       pathType: meta.arrowPathType ?? 'straight',
+      curveBulge: meta.arrowCurveBulge,
+      curveT: meta.arrowCurveT,
     })
     setAvnacShapeMeta(g, { ...meta, arrowEndpoints: ep })
     return true
   }
   return controlsUtils.wrapWithFireEvent(MODIFY_POLY, inner)
+}
+
+function renderArrowCurveControl(
+  this: Control,
+  ctx: CanvasRenderingContext2D,
+  left: number,
+  top: number,
+  _styleOverride: unknown,
+  _fabricObject: InteractiveFabricObject,
+) {
+  const r = 24
+  ctx.save()
+  ctx.fillStyle = '#7c3aed'
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = 4
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'
+  ctx.shadowBlur = 10
+  ctx.beginPath()
+  ctx.arc(left, top, r, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.shadowColor = 'transparent'
+  ctx.stroke()
+  ctx.restore()
+}
+
+function arrowCurveHandlePosition() {
+  return (
+    _dim: Point,
+    _finalMatrix: number[],
+    fabricObject: InteractiveFabricObject,
+  ) => {
+    const g = fabricObject as Group
+    const meta = getAvnacShapeMeta(g)
+    if (!meta || meta.kind !== 'arrow' || meta.arrowPathType !== 'curved') {
+      return new Point(0, 0)
+    }
+    const ep = meta.arrowEndpoints
+    if (!ep) return new Point(0, 0)
+    const dx = ep.x2 - ep.x1
+    const dy = ep.y2 - ep.y1
+    const L = Math.max(Math.hypot(dx, dy), 1)
+    const strokeW = meta.arrowStrokeWidth ?? 10
+    const headFrac = meta.arrowHead ?? 1
+    const shaftLen = arrowShaftLen(L, strokeW, headFrac)
+    const bulge = effectiveShaftBulge(
+      L,
+      strokeW,
+      'curved',
+      meta.arrowCurveBulge,
+    )
+    const ct = meta.arrowCurveT ?? 0.5
+    const local = arrowCurveMidHandleGroupLocal(L, shaftLen, bulge, ct)
+    return local.transform(
+      util.multiplyTransformMatrices(
+        g.getViewportTransform(),
+        g.calcTransformMatrix(),
+      ),
+    )
+  }
+}
+
+function arrowCurveHandleAction(): TransformActionHandler {
+  const inner: TransformActionHandler = (_e, transform, x, y) => {
+    const g = transform.target as Group
+    const canvas = g.canvas
+    if (!canvas) return false
+    ensureAvnacArrowEndpoints(g)
+    const meta = getAvnacShapeMeta(g)
+    if (
+      !meta ||
+      meta.kind !== 'arrow' ||
+      meta.arrowPathType !== 'curved' ||
+      !meta.arrowEndpoints
+    ) {
+      return false
+    }
+    const ep = meta.arrowEndpoints
+    const dx = ep.x2 - ep.x1
+    const dy = ep.y2 - ep.y1
+    const L = Math.max(Math.hypot(dx, dy), 1)
+    const strokeW = meta.arrowStrokeWidth ?? 10
+    const headFrac = meta.arrowHead ?? 1
+    const shaftLen = arrowShaftLen(L, strokeW, headFrac)
+    const scene = scenePointFromCanvas(canvas, x, y)
+    const local = util.transformPoint(
+      scene,
+      util.invertTransform(g.calcTransformMatrix()),
+    )
+    const { bulge: nextBulge, t: nextT } = curveParamsFromDragPoint(
+      L,
+      shaftLen,
+      strokeW,
+      local.x,
+      local.y,
+    )
+    const color = arrowDisplayColor(g)
+    layoutArrowGroup(g, ep.x1, ep.y1, ep.x2, ep.y2, {
+      strokeWidth: strokeW,
+      headFrac,
+      color,
+      lineStyle: meta.arrowLineStyle,
+      roundedEnds: meta.arrowRoundedEnds,
+      pathType: 'curved',
+      curveBulge: nextBulge,
+      curveT: nextT,
+    })
+    setAvnacShapeMeta(g, {
+      ...meta,
+      arrowCurveBulge: nextBulge,
+      arrowCurveT: nextT,
+    })
+    return true
+  }
+  return controlsUtils.wrapWithFireEvent(MODIFY_POLY, inner)
+}
+
+export function syncAvnacArrowCurveControlVisibility(g: Group) {
+  const meta = getAvnacShapeMeta(g)
+  const show = meta?.kind === 'arrow' && meta.arrowPathType === 'curved'
+  g.setControlVisible('curve', show)
 }
 
 export function installCanvaLineControls(line: Line) {
@@ -212,6 +338,16 @@ export function installCanvaArrowControls(g: Group) {
       actionHandler: arrowEndpointAction('tip'),
       cursorStyle: 'pointer',
     }),
+    curve: new Control({
+      positionHandler: arrowCurveHandlePosition(),
+      actionHandler: arrowCurveHandleAction(),
+      cursorStyle: 'grab',
+      sizeX: 56,
+      sizeY: 56,
+      touchSizeX: 72,
+      touchSizeY: 72,
+      render: renderArrowCurveControl,
+    }),
     mtr: new Control({
       x: 0,
       y: 0.5,
@@ -223,4 +359,5 @@ export function installCanvaArrowControls(g: Group) {
       sizeY: 56,
     }),
   }
+  syncAvnacArrowCurveControlVisibility(g)
 }
