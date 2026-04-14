@@ -23,6 +23,10 @@ export type AvnacShapeMeta = {
   arrowLineStyle?: ArrowLineStyle
   arrowRoundedEnds?: boolean
   arrowPathType?: ArrowPathType
+  /** Quadratic control-point Y in group-local coords; only for `curved`. */
+  arrowCurveBulge?: number
+  /** Position of the Q control-point along the shaft (0-1); only for `curved`. Default 0.5. */
+  arrowCurveT?: number
 }
 
 export function getAvnacShapeMeta(
