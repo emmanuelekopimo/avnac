@@ -199,13 +199,15 @@ export default function TextFormatToolbar({
 
       <FloatingToolbarDivider />
 
-      <div className="flex min-h-8 min-w-0 flex-nowrap items-center gap-1 overflow-x-auto py-1 pr-2 [scrollbar-width:thin]">
-        <FontSizeScrubber
-          value={values.fontSize}
-          min={8}
-          max={800}
-          onChange={(fontSize) => onChange({ fontSize })}
-        />
+      <div className="flex min-h-8 min-w-0 flex-nowrap items-center gap-1 py-1 pr-2">
+        <div className="flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto [scrollbar-width:thin]">
+          <FontSizeScrubber
+            value={values.fontSize}
+            min={8}
+            max={800}
+            onChange={(fontSize) => onChange({ fontSize })}
+          />
+        </div>
 
         <div className="mx-0.5 h-5 w-px shrink-0 bg-black/10" aria-hidden />
 
@@ -219,92 +221,94 @@ export default function TextFormatToolbar({
 
         <div className="mx-0.5 h-5 w-px shrink-0 bg-black/10" aria-hidden />
 
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.textAlign === 'left')}
-          title="Align left"
-          aria-label="Align left"
-          onClick={() => onChange({ textAlign: 'left' })}
-        >
-          <HugeiconsIcon
-            icon={TextAlignLeftIcon}
-            size={18}
-            strokeWidth={1.75}
-          />
-        </button>
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.textAlign === 'center')}
-          title="Align center"
-          aria-label="Align center"
-          onClick={() => onChange({ textAlign: 'center' })}
-        >
-          <HugeiconsIcon
-            icon={TextAlignCenterIcon}
-            size={18}
-            strokeWidth={1.75}
-          />
-        </button>
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.textAlign === 'right')}
-          title="Align right"
-          aria-label="Align right"
-          onClick={() => onChange({ textAlign: 'right' })}
-        >
-          <HugeiconsIcon
-            icon={TextAlignRightIcon}
-            size={18}
-            strokeWidth={1.75}
-          />
-        </button>
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.textAlign === 'justify')}
-          title="Justify"
-          aria-label="Justify"
-          onClick={() => onChange({ textAlign: 'justify' })}
-        >
-          <HugeiconsIcon
-            icon={TextAlignJustifyCenterIcon}
-            size={18}
-            strokeWidth={1.75}
-          />
-        </button>
+        <div className="flex min-h-8 min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto [scrollbar-width:thin]">
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.textAlign === 'left')}
+            title="Align left"
+            aria-label="Align left"
+            onClick={() => onChange({ textAlign: 'left' })}
+          >
+            <HugeiconsIcon
+              icon={TextAlignLeftIcon}
+              size={18}
+              strokeWidth={1.75}
+            />
+          </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.textAlign === 'center')}
+            title="Align center"
+            aria-label="Align center"
+            onClick={() => onChange({ textAlign: 'center' })}
+          >
+            <HugeiconsIcon
+              icon={TextAlignCenterIcon}
+              size={18}
+              strokeWidth={1.75}
+            />
+          </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.textAlign === 'right')}
+            title="Align right"
+            aria-label="Align right"
+            onClick={() => onChange({ textAlign: 'right' })}
+          >
+            <HugeiconsIcon
+              icon={TextAlignRightIcon}
+              size={18}
+              strokeWidth={1.75}
+            />
+          </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.textAlign === 'justify')}
+            title="Justify"
+            aria-label="Justify"
+            onClick={() => onChange({ textAlign: 'justify' })}
+          >
+            <HugeiconsIcon
+              icon={TextAlignJustifyCenterIcon}
+              size={18}
+              strokeWidth={1.75}
+            />
+          </button>
 
-        <div className="mx-0.5 h-5 w-px shrink-0 bg-black/10" aria-hidden />
+          <div className="mx-0.5 h-5 w-px shrink-0 bg-black/10" aria-hidden />
 
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.bold)}
-          title="Bold"
-          aria-label="Bold"
-          onClick={() => onChange({ bold: !values.bold })}
-        >
-          <HugeiconsIcon icon={TextBoldIcon} size={18} strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.italic)}
-          title="Italic"
-          aria-label="Italic"
-          onClick={() => onChange({ italic: !values.italic })}
-        >
-          <HugeiconsIcon icon={TextItalicIcon} size={18} strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          className={floatingToolbarIconButton(values.underline)}
-          title="Underline"
-          aria-label="Underline"
-          onClick={() => onChange({ underline: !values.underline })}
-        >
-          <HugeiconsIcon
-            icon={TextUnderlineIcon}
-            size={18}
-            strokeWidth={1.75}
-          />
-        </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.bold)}
+            title="Bold"
+            aria-label="Bold"
+            onClick={() => onChange({ bold: !values.bold })}
+          >
+            <HugeiconsIcon icon={TextBoldIcon} size={18} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.italic)}
+            title="Italic"
+            aria-label="Italic"
+            onClick={() => onChange({ italic: !values.italic })}
+          >
+            <HugeiconsIcon icon={TextItalicIcon} size={18} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            className={floatingToolbarIconButton(values.underline)}
+            title="Underline"
+            aria-label="Underline"
+            onClick={() => onChange({ underline: !values.underline })}
+          >
+            <HugeiconsIcon
+              icon={TextUnderlineIcon}
+              size={18}
+              strokeWidth={1.75}
+            />
+          </button>
+        </div>
       </div>
     </FloatingToolbarShell>
   )
