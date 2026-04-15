@@ -21,7 +21,6 @@ import { installArtboardCenterSnap } from '../lib/fabric-artboard-center-snap'
 import {
   ensureAvnacArrowEndpoints,
   installArrowEndpointControls,
-  installLineEndpointControls,
   syncAvnacArrowCurveControlVisibility,
   syncAvnacArrowEndpointsFromGeometry,
 } from '../lib/fabric-line-arrow-controls'
@@ -38,7 +37,9 @@ import {
   layoutArrowGroup,
 } from '../lib/avnac-stroke-arrow'
 import {
+  avnacStrokeLineHeadFrac,
   getAvnacShapeMeta,
+  isAvnacStrokeLineLike,
   setAvnacShapeMeta,
   type ArrowLineStyle,
   type ArrowPathType,
@@ -291,9 +292,9 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       return
     }
     let paint: BgValue
-    if (meta.kind === 'line') {
+    if (meta.kind === 'line' && !(obj instanceof mod.Group)) {
       paint = bgValueFromFabricStroke(obj)
-    } else if (meta.kind === 'arrow' && obj instanceof mod.Group) {
+    } else if (isAvnacStrokeLineLike(meta) && obj instanceof mod.Group) {
       paint =
         getAvnacStroke(obj) ??
         ({ type: 'solid', color: arrowDisplayColor(obj) } satisfies BgValue)
@@ -301,7 +302,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       paint = bgValueFromFabricFill(obj)
     }
     setShapeToolbarModel({ meta: { ...meta }, paint })
-    if (meta.kind === 'arrow' && obj instanceof mod.Group) {
+    if (isAvnacStrokeLineLike(meta) && obj instanceof mod.Group) {
       syncAvnacArrowCurveControlVisibility(obj)
     }
     obj.setCoords()
@@ -352,15 +353,18 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       if (!obj) return
       const meta = getAvnacShapeMeta(obj)
 
-      if (obj instanceof mod.Line || meta?.kind === 'line') {
+      if (
+        obj instanceof mod.Line ||
+        (meta?.kind === 'line' && !(obj instanceof mod.Group))
+      ) {
         applyBgValueToStroke(mod, obj, v)
-      } else if (obj instanceof mod.Group && meta?.kind === 'arrow') {
+      } else if (obj instanceof mod.Group && isAvnacStrokeLineLike(meta)) {
         setAvnacStroke(obj, v)
         const hex = bgValueSolidFallback(v)
         const parts = getArrowParts(obj)
         if (parts) {
           parts.shaft.set('stroke', hex)
-          parts.head.set('fill', hex)
+          parts.head?.set('fill', hex)
         }
       } else if (obj instanceof mod.IText) {
         applyBgValueToFill(mod, obj, v)
@@ -389,7 +393,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       setSelectedPaint(bgValueFromFabricStroke(obj))
     } else if (
       obj instanceof mod.Group &&
-      getAvnacShapeMeta(obj)?.kind === 'arrow'
+      isAvnacStrokeLineLike(getAvnacShapeMeta(obj))
     ) {
       setSelectedPaint(
         getAvnacStroke(obj) ??
@@ -413,7 +417,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     }
     if (
       obj instanceof mod.Group &&
-      getAvnacShapeMeta(obj)?.kind === 'arrow'
+      isAvnacStrokeLineLike(getAvnacShapeMeta(obj))
     ) {
       setSelectedPaint(
         getAvnacStroke(obj) ??
@@ -758,7 +762,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       }
       if (
         target instanceof mod.Group &&
-        getAvnacShapeMeta(target)?.kind === 'arrow'
+        isAvnacStrokeLineLike(getAvnacShapeMeta(target))
       ) {
         syncAvnacArrowEndpointsFromGeometry(target)
       }
@@ -992,20 +996,31 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     const mod = fabricModRef.current
     if (!canvas || !mod) return
     const half = Math.round(RECT_W * 0.42)
-    const line = new mod.Line([-half, 0, half, 0], {
-      left: ARTBOARD_W / 2,
-      top: ARTBOARD_H / 2,
-      stroke: bgValueSolidFallback(selectedPaint),
-      strokeWidth: Math.max(8, RECT_RX * 2.5),
-      strokeLineCap: 'round',
-      originX: 'center',
-      originY: 'center',
+    const cx = ARTBOARD_W / 2
+    const cy = ARTBOARD_H / 2
+    const x1 = cx - half
+    const y1 = cy
+    const x2 = cx + half
+    const y2 = cy
+    const strokeW = 10
+    const g = createArrowGroup(mod, x1, y1, x2, y2, {
+      strokeWidth: strokeW,
+      headFrac: 0,
+      color: bgValueSolidFallback(selectedPaint),
     })
-    setAvnacShapeMeta(line, { kind: 'line' })
-    applyBgValueToStroke(mod, line, selectedPaint)
-    installLineEndpointControls(line)
-    canvas.add(line)
-    canvas.setActiveObject(line)
+    setAvnacStroke(g, selectedPaint)
+    setAvnacShapeMeta(g, {
+      kind: 'line',
+      arrowHead: 0,
+      arrowEndpoints: { x1, y1, x2, y2 },
+      arrowStrokeWidth: strokeW,
+      arrowLineStyle: 'solid',
+      arrowRoundedEnds: false,
+      arrowPathType: 'straight',
+    })
+    installArrowEndpointControls(g)
+    canvas.add(g)
+    canvas.setActiveObject(g)
     canvas.requestRenderAll()
     syncSelection()
   }
@@ -1103,16 +1118,16 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     const obj = canvas.getActiveObject()
     if (!(obj instanceof mod.Group)) return
     const meta = getAvnacShapeMeta(obj)
-    if (!meta || meta.kind !== 'arrow') return
+    if (!meta || !isAvnacStrokeLineLike(meta)) return
     ensureAvnacArrowEndpoints(obj)
     const m = getAvnacShapeMeta(obj)
     const ep = m?.arrowEndpoints
-    if (!ep) return
-    const strokeW = m?.arrowStrokeWidth ?? 10
+    if (!m || !ep) return
+    const strokeW = m.arrowStrokeWidth ?? 10
     const color = arrowDisplayColor(obj)
     layoutArrowGroup(obj, ep.x1, ep.y1, ep.x2, ep.y2, {
       strokeWidth: strokeW,
-      headFrac: m?.arrowHead ?? 1,
+      headFrac: avnacStrokeLineHeadFrac(m),
       color,
       lineStyle: style,
       roundedEnds: m?.arrowRoundedEnds,
@@ -1132,18 +1147,18 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     const obj = canvas.getActiveObject()
     if (!(obj instanceof mod.Group)) return
     const meta = getAvnacShapeMeta(obj)
-    if (!meta || meta.kind !== 'arrow') return
+    if (!meta || !isAvnacStrokeLineLike(meta)) return
     ensureAvnacArrowEndpoints(obj)
     const m = getAvnacShapeMeta(obj)
     const ep = m?.arrowEndpoints
-    if (!ep) return
-    const strokeW = m?.arrowStrokeWidth ?? 10
+    if (!m || !ep) return
+    const strokeW = m.arrowStrokeWidth ?? 10
     const color = arrowDisplayColor(obj)
     layoutArrowGroup(obj, ep.x1, ep.y1, ep.x2, ep.y2, {
       strokeWidth: strokeW,
-      headFrac: m?.arrowHead ?? 1,
+      headFrac: avnacStrokeLineHeadFrac(m),
       color,
-      lineStyle: m?.arrowLineStyle,
+      lineStyle: m.arrowLineStyle,
       roundedEnds: rounded,
       pathType: m?.arrowPathType ?? 'straight',
       curveBulge: m?.arrowCurveBulge,
@@ -1161,22 +1176,22 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     const obj = canvas.getActiveObject()
     if (!(obj instanceof mod.Group)) return
     const meta = getAvnacShapeMeta(obj)
-    if (!meta || meta.kind !== 'arrow') return
+    if (!meta || !isAvnacStrokeLineLike(meta)) return
     const strokeW = Math.max(1, Math.min(80, w))
     ensureAvnacArrowEndpoints(obj)
     const m = getAvnacShapeMeta(obj)
     const ep = m?.arrowEndpoints
-    if (!ep) return
+    if (!m || !ep) return
     const color = arrowDisplayColor(obj)
     layoutArrowGroup(obj, ep.x1, ep.y1, ep.x2, ep.y2, {
       strokeWidth: strokeW,
-      headFrac: m?.arrowHead ?? 1,
+      headFrac: avnacStrokeLineHeadFrac(m),
       color,
-      lineStyle: m?.arrowLineStyle,
-      roundedEnds: m?.arrowRoundedEnds,
-      pathType: m?.arrowPathType ?? 'straight',
-      curveBulge: m?.arrowCurveBulge,
-      curveT: m?.arrowCurveT,
+      lineStyle: m.arrowLineStyle,
+      roundedEnds: m.arrowRoundedEnds,
+      pathType: m.arrowPathType ?? 'straight',
+      curveBulge: m.arrowCurveBulge,
+      curveT: m.arrowCurveT,
     })
     setAvnacShapeMeta(obj, { ...m, arrowStrokeWidth: strokeW })
     canvas.requestRenderAll()
@@ -1190,22 +1205,22 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     const obj = canvas.getActiveObject()
     if (!(obj instanceof mod.Group)) return
     const meta = getAvnacShapeMeta(obj)
-    if (!meta || meta.kind !== 'arrow') return
+    if (!meta || !isAvnacStrokeLineLike(meta)) return
     ensureAvnacArrowEndpoints(obj)
     const m = getAvnacShapeMeta(obj)
     const ep = m?.arrowEndpoints
-    if (!ep) return
-    const strokeW = m?.arrowStrokeWidth ?? 10
+    if (!m || !ep) return
+    const strokeW = m.arrowStrokeWidth ?? 10
     const color = arrowDisplayColor(obj)
     layoutArrowGroup(obj, ep.x1, ep.y1, ep.x2, ep.y2, {
       strokeWidth: strokeW,
-      headFrac: m?.arrowHead ?? 1,
+      headFrac: avnacStrokeLineHeadFrac(m),
       color,
-      lineStyle: m?.arrowLineStyle,
-      roundedEnds: m?.arrowRoundedEnds,
+      lineStyle: m.arrowLineStyle,
+      roundedEnds: m.arrowRoundedEnds,
       pathType,
-      curveBulge: pathType === 'curved' ? m?.arrowCurveBulge : undefined,
-      curveT: pathType === 'curved' ? m?.arrowCurveT : undefined,
+      curveBulge: pathType === 'curved' ? m.arrowCurveBulge : undefined,
+      curveT: pathType === 'curved' ? m.arrowCurveT : undefined,
     })
     setAvnacShapeMeta(obj, {
       ...m,
@@ -1396,7 +1411,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     if (!g || !(g instanceof mod.Group)) return
     if (mod.ActiveSelection && g instanceof mod.ActiveSelection) return
     const meta = getAvnacShapeMeta(g)
-    if (meta?.kind === 'arrow') return
+    if (isAvnacStrokeLineLike(meta)) return
 
     canvas.discardActiveObject()
     const items = g.removeAll()
@@ -1495,8 +1510,9 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
           !(mod.ActiveSelection && a instanceof mod.ActiveSelection)
         ) {
           elementToolbarLockedDisplay = getAvnacLocked(a)
-          elementToolbarCanUngroup =
-            getAvnacShapeMeta(a)?.kind !== 'arrow'
+          elementToolbarCanUngroup = !isAvnacStrokeLineLike(
+            getAvnacShapeMeta(a),
+          )
         } else {
           elementToolbarLockedDisplay = getAvnacLocked(a)
         }
