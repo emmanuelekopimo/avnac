@@ -2,6 +2,7 @@ import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
+import NativeTitleTooltip from '../components/native-title-tooltip'
 import appCss from '../styles.css?url'
 
 export const Route = createRootRoute({
@@ -40,6 +41,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body className="font-sans antialiased selection:bg-neutral-200 selection:text-[var(--text)]">
+        <NativeTitleTooltip />
         {children}
         {import.meta.env.DEV ? (
           <TanStackDevtools
