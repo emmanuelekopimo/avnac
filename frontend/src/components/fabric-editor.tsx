@@ -228,7 +228,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     vertical: false,
     horizontal: false,
   })
-  const [artboardHovered, setArtboardHovered] = useState(false)
+  const [artboardEmptyHovered, setArtboardEmptyHovered] = useState(false)
   const [elementToolbarLayout, setElementToolbarLayout] = useState<{
     left: number
     top: number
@@ -636,6 +636,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       }
 
       const onCanvasMouseDown = (opt: { target?: FabricObject | null }) => {
+        setArtboardEmptyHovered(!opt.target)
         if (opt.target) {
           setCanvasBodySelected(false)
         } else {
@@ -643,10 +644,23 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
         }
       }
 
+      const onArtboardPointerMove = (opt: { target?: FabricObject | null }) => {
+        const overEmpty = !opt.target
+        setArtboardEmptyHovered((prev) =>
+          prev === overEmpty ? prev : overEmpty,
+        )
+      }
+      const onArtboardPointerOut = () => {
+        setArtboardEmptyHovered((prev) => (prev ? false : prev))
+      }
+
       canvas.on('selection:created', onSelect)
       canvas.on('selection:updated', onSelect)
       canvas.on('selection:cleared', onClear)
       canvas.on('mouse:down', onCanvasMouseDown)
+      canvas.on('mouse:over', onArtboardPointerMove)
+      canvas.on('mouse:move', onArtboardPointerMove)
+      canvas.on('mouse:out', onArtboardPointerOut)
 
       window.addEventListener('keydown', onKeyDown)
       setReady(true)
@@ -660,6 +674,9 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
         canvas.off('selection:updated', onSelect)
         canvas.off('selection:cleared', onClear)
         canvas.off('mouse:down', onCanvasMouseDown)
+        canvas.off('mouse:over', onArtboardPointerMove)
+        canvas.off('mouse:move', onArtboardPointerMove)
+        canvas.off('mouse:out', onArtboardPointerOut)
         window.removeEventListener('keydown', onKeyDown)
         void canvas.dispose()
         fabricCanvasRef.current = null
@@ -1523,12 +1540,11 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
               className="relative rounded-sm"
               style={{
                 lineHeight: 0,
-                boxShadow: canvasBodySelected || artboardHovered
-                  ? `0 4px 24px rgba(0,0,0,0.08), 0 0 0 2px ${EDITOR_ACCENT_PURPLE}`
-                  : '0 4px 24px rgba(0,0,0,0.08)',
+                boxShadow:
+                  artboardEmptyHovered && !hasObjectSelected
+                    ? `0 4px 24px rgba(0,0,0,0.08), 0 0 0 2px ${EDITOR_ACCENT_PURPLE}`
+                    : '0 4px 24px rgba(0,0,0,0.08)',
               }}
-              onMouseEnter={() => setArtboardHovered(true)}
-              onMouseLeave={() => setArtboardHovered(false)}
             >
               <canvas ref={canvasElRef} className="block max-w-none" />
               {ready &&
