@@ -152,7 +152,10 @@ type Props = {
   onChange: (v: BgValue) => void
 }
 
-export default function BackgroundPopover({ value, onChange }: Props) {
+export default function BackgroundPopover({
+  value,
+  onChange,
+}: Props) {
   const [tab, setTab] = useState<Tab>(value.type === 'gradient' ? 'gradient' : 'solid')
   const customColorRef = useRef<HTMLInputElement>(null)
   const gradColor1Ref = useRef<HTMLInputElement>(null)
