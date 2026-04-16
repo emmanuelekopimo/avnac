@@ -83,3 +83,19 @@ export function bgValueFromFabricStroke(obj: FabricObject): BgValue {
   if (typeof s === 'string' && s) return { type: 'solid', color: s }
   return { type: 'solid', color: '#262626' }
 }
+
+export function bgValuesShallowEqual(a: BgValue, b: BgValue): boolean {
+  if (a.type === 'solid' && b.type === 'solid') return a.color === b.color
+  if (a.type === 'gradient' && b.type === 'gradient') {
+    return (
+      a.angle === b.angle &&
+      a.css === b.css &&
+      a.stops.length === b.stops.length &&
+      a.stops.every(
+        (s, i) =>
+          s.color === b.stops[i]?.color && s.offset === b.stops[i]?.offset,
+      )
+    )
+  }
+  return false
+}
