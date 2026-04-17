@@ -7,11 +7,10 @@ import {
   Cancel01Icon,
   CircleIcon,
   Delete02Icon,
-  EraserIcon,
-  PaintBucketIcon,
   Pen01Icon,
   PenTool03Icon,
   PolygonIcon,
+  Cursor02Icon,
   SolidLine01Icon,
   SquareIcon,
   ViewIcon,
@@ -21,10 +20,18 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
-import EditorRangeSlider from './editor-range-slider'
+import type { BgValue } from './background-popover'
+import PaintPopoverControl from './paint-popover-control'
+import StrokeToolbarPopover from './stroke-toolbar-popover'
+import {
+  FloatingToolbarDivider,
+  FloatingToolbarShell,
+  floatingToolbarIconButton,
+} from './floating-toolbar-shell'
 import {
   applySmoothPlacementHandles,
   ctrlInAbs,
@@ -32,12 +39,13 @@ import {
   type VectorPenAnchor,
 } from '../lib/avnac-vector-pen-bezier'
 import {
-  AVNAC_VECTOR_BOARD_DRAG_MIME,
+  applyTranslateStrokeInDoc,
   createVectorBoardLayer,
-  distanceToStroke,
   emptyVectorBoardDocument,
-  fillTopClosedShapeAt,
+  findTopStrokeAt,
   getActiveLayer,
+  normBoundsForStroke,
+  updateVectorStrokeInDoc,
   vectorDocHasRenderableStrokes,
   type VectorBoardDocument,
   type VectorBoardStroke,
@@ -46,17 +54,40 @@ import {
 
 const GRID_STEP = 24
 const POINT_EPS = 0.002
-const ERASE_THRESHOLD = 0.018
 const DRAFT_SHAPE_EDGE = 'rgba(15,23,42,0.32)'
 const PEN_HIT_R = 0.017
 const PEN_HIT_R_SQ = PEN_HIT_R * PEN_HIT_R
 const PEN_CORNER_DRAG = 0.005
 
+const CURSOR_PEN_ADD =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Cpath d='M11 4v14M4 11h14' stroke='%231e293b' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\") 11 11, crosshair"
+
+const CURSOR_PEN_REMOVE =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Cpath d='M5 5l12 12M17 5L5 17' stroke='%23dc2626' stroke-width='2.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\") 11 11, not-allowed"
+
+function releasePointerIfCaptured(
+  el: HTMLElement | null,
+  pointerId: number,
+) {
+  if (!el || pointerId < 0) return
+  try {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId)
+  } catch {
+    /* ignore */
+  }
+}
+
 function strokePaintVisible(stroke: string): boolean {
   return Boolean(stroke) && stroke !== 'transparent'
 }
 
+function bgValuePreferSolid(v: BgValue): string {
+  if (v.type === 'solid') return v.color
+  return v.stops[0]?.color ?? '#1a1a1a'
+}
+
 type DrawTool =
+  | 'move'
   | 'pencil'
   | 'pen'
   | 'line'
@@ -64,8 +95,8 @@ type DrawTool =
   | 'ellipse'
   | 'arrow'
   | 'polygon'
-  | 'fill'
-  | 'eraser'
+
+type DocStrokeSelection = { layerId: string; strokeId: string }
 
 type ShapeDraftTool = 'line' | 'rect' | 'ellipse' | 'arrow'
 
@@ -140,6 +171,26 @@ function hitTestPenBezier(
   return null
 }
 
+function removePenAnchorAt(
+  anchors: VectorPenAnchor[],
+  idx: number,
+): VectorPenAnchor[] {
+  if (idx < 0 || idx >= anchors.length) return anchors
+  const copy = anchors.map((a) => ({ ...a }))
+  copy.splice(idx, 1)
+  if (idx > 0) {
+    const prev = copy[idx - 1]!
+    delete prev.outX
+    delete prev.outY
+  }
+  if (idx < copy.length) {
+    const next = copy[idx]!
+    delete next.inX
+    delete next.inY
+  }
+  return copy
+}
+
 function paintHandleDiamond(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -166,13 +217,55 @@ function paintPenBezierDraft(
   h: number,
   strokeColor: string,
   strokeWidthPx: number,
+  fillColor: string,
+  removeHintIndex: number | null,
+  closeHover: boolean,
 ) {
   const { anchors, selectedAnchor } = draft
   if (anchors.length >= 2) {
-    ctx.strokeStyle = strokeColor
-    ctx.lineWidth = Math.max(1, strokeWidthPx)
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
+    if (
+      closeHover &&
+      fillColor &&
+      fillColor !== 'transparent' &&
+      anchors.length >= 3
+    ) {
+      ctx.beginPath()
+      ctx.moveTo(anchors[0]!.x * w, anchors[0]!.y * h)
+      for (let i = 0; i < anchors.length - 1; i++) {
+        const a = anchors[i]!
+        const b = anchors[i + 1]!
+        const [x1, y1] = ctrlOutAbs(a)
+        const [x2, y2] = ctrlInAbs(b)
+        ctx.bezierCurveTo(
+          x1 * w,
+          y1 * h,
+          x2 * w,
+          y2 * h,
+          b.x * w,
+          b.y * h,
+        )
+      }
+      const last = anchors[anchors.length - 1]!
+      const first = anchors[0]!
+      const [lx1, ly1] = ctrlOutAbs(last)
+      const [lx2, ly2] = ctrlInAbs(first)
+      ctx.bezierCurveTo(
+        lx1 * w,
+        ly1 * h,
+        lx2 * w,
+        ly2 * h,
+        first.x * w,
+        first.y * h,
+      )
+      ctx.fillStyle = fillColor
+      ctx.globalAlpha = 0.35
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+    ctx.strokeStyle = strokeColor
+    ctx.lineWidth = Math.max(1, strokeWidthPx)
     ctx.beginPath()
     ctx.moveTo(anchors[0]!.x * w, anchors[0]!.y * h)
     for (let i = 0; i < anchors.length - 1; i++) {
@@ -190,6 +283,29 @@ function paintPenBezierDraft(
       )
     }
     ctx.stroke()
+  }
+
+  if (closeHover && anchors.length >= 2) {
+    const last = anchors[anchors.length - 1]!
+    const first = anchors[0]!
+    ctx.save()
+    ctx.strokeStyle = 'rgba(37, 99, 235, 0.9)'
+    ctx.lineWidth = Math.max(1, strokeWidthPx)
+    ctx.setLineDash([5, 4])
+    ctx.beginPath()
+    ctx.moveTo(last.x * w, last.y * h)
+    const [cx1, cy1] = ctrlOutAbs(last)
+    const [cx2, cy2] = ctrlInAbs(first)
+    ctx.bezierCurveTo(
+      cx1 * w,
+      cy1 * h,
+      cx2 * w,
+      cy2 * h,
+      first.x * w,
+      first.y * h,
+    )
+    ctx.stroke()
+    ctx.restore()
   }
 
   const ax = (x: number) => x * w
@@ -222,6 +338,19 @@ function paintPenBezierDraft(
     ctx.arc(ax(p.x), ay(p.y), r, 0, Math.PI * 2)
     ctx.fill()
     ctx.stroke()
+    if (removeHintIndex === i) {
+      const cx = ax(p.x)
+      const cy = ay(p.y)
+      const k = 6
+      ctx.strokeStyle = '#dc2626'
+      ctx.lineWidth = 1.75
+      ctx.beginPath()
+      ctx.moveTo(cx - k, cy - k)
+      ctx.lineTo(cx + k, cy + k)
+      ctx.moveTo(cx + k, cy - k)
+      ctx.lineTo(cx - k, cy + k)
+      ctx.stroke()
+    }
   }
 }
 
@@ -260,7 +389,6 @@ function paintStroke(
   }
 
   if (s.kind === 'pen') {
-    if (!drawStroke) return
     if (s.penAnchors && s.penAnchors.length >= 2) {
       ctx.beginPath()
       ctx.moveTo(s.penAnchors[0]!.x * w, s.penAnchors[0]!.y * h)
@@ -278,7 +406,25 @@ function paintStroke(
           b.y * h,
         )
       }
-      ctx.stroke()
+      if (s.penClosed === true && s.penAnchors.length >= 2) {
+        const last = s.penAnchors[s.penAnchors.length - 1]!
+        const first = s.penAnchors[0]!
+        const [lx1, ly1] = ctrlOutAbs(last)
+        const [lx2, ly2] = ctrlInAbs(first)
+        ctx.bezierCurveTo(
+          lx1 * w,
+          ly1 * h,
+          lx2 * w,
+          ly2 * h,
+          first.x * w,
+          first.y * h,
+        )
+      }
+      if (hasFill && s.penClosed === true) {
+        ctx.fillStyle = s.fill
+        ctx.fill()
+      }
+      if (drawStroke) ctx.stroke()
       return
     }
     if (s.points.length < 2) return
@@ -287,7 +433,12 @@ function paintStroke(
     for (let i = 1; i < s.points.length; i++) {
       ctx.lineTo(s.points[i]![0] * w, s.points[i]![1] * h)
     }
-    ctx.stroke()
+    if (s.penClosed === true && s.points.length >= 3) ctx.closePath()
+    if (hasFill && s.penClosed === true && s.points.length >= 3) {
+      ctx.fillStyle = s.fill
+      ctx.fill()
+    }
+    if (drawStroke) ctx.stroke()
     return
   }
 
@@ -406,10 +557,22 @@ function paintDraft(
   strokeColor: string,
   strokeWidthPx: number,
   fillColor: string,
+  penRemoveHintIndex: number | null,
+  penCloseHover: boolean,
 ) {
   if (!draft) return
   if (draft.kind === 'pen-bezier') {
-    paintPenBezierDraft(ctx, draft, w, h, strokeColor, strokeWidthPx)
+    paintPenBezierDraft(
+      ctx,
+      draft,
+      w,
+      h,
+      strokeColor,
+      strokeWidthPx,
+      fillColor,
+      penRemoveHintIndex,
+      penCloseHover,
+    )
     return
   }
 
@@ -530,43 +693,35 @@ function paintDraft(
   }
 }
 
-function eraseNearestStroke(
+function paintDocSelection(
+  ctx: CanvasRenderingContext2D,
   doc: VectorBoardDocument,
-  nx: number,
-  ny: number,
-): VectorBoardDocument | null {
-  const order = [...doc.layers].reverse()
-  for (const layer of order) {
-    if (!layer.visible) continue
-    const strokes = [...layer.strokes].reverse()
-    for (const s of strokes) {
-      if (distanceToStroke(nx, ny, s) < ERASE_THRESHOLD) {
-        return {
-          ...doc,
-          layers: doc.layers.map((L) =>
-            L.id !== layer.id
-              ? L
-              : { ...L, strokes: L.strokes.filter((x) => x.id !== s.id) },
-          ),
-        }
-      }
-    }
-  }
-  return null
-}
-
-function toolButtonClass(active: boolean) {
-  return [
-    'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors',
-    active
-      ? 'bg-[#8B3DFF] text-white'
-      : 'bg-black/[0.04] text-neutral-800 hover:bg-black/[0.08]',
-  ].join(' ')
+  sel: DocStrokeSelection | null,
+  w: number,
+  h: number,
+) {
+  if (!sel) return
+  const layer = doc.layers.find((l) => l.id === sel.layerId)
+  if (!layer?.visible) return
+  const s = layer.strokes.find((x) => x.id === sel.strokeId)
+  if (!s) return
+  const b = normBoundsForStroke(s)
+  if (!b) return
+  const pad = 0.01
+  const x0 = (b.minX - pad) * w
+  const y0 = (b.minY - pad) * h
+  const rw = (b.maxX - b.minX + pad * 2) * w
+  const rh = (b.maxY - b.minY + pad * 2) * h
+  ctx.save()
+  ctx.strokeStyle = '#2563eb'
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([6, 4])
+  ctx.strokeRect(x0, y0, Math.max(1, rw), Math.max(1, rh))
+  ctx.restore()
 }
 
 type Props = {
   open: boolean
-  boardId: string
   boardName: string
   document: VectorBoardDocument
   onDocumentChange: (doc: VectorBoardDocument) => void
@@ -576,7 +731,6 @@ type Props = {
 
 export default function VectorBoardWorkspace({
   open,
-  boardId,
   boardName,
   document,
   onDocumentChange,
@@ -591,6 +745,52 @@ export default function VectorBoardWorkspace({
   const [strokeWidthPx, setStrokeWidthPx] = useState(3)
   const [draft, setDraft] = useState<DraftState | null>(null)
   const draftRef = useRef<DraftState | null>(null)
+  const [penRemoveHintIndex, setPenRemoveHintIndex] = useState<number | null>(
+    null,
+  )
+  const [penCloseHover, setPenCloseHover] = useState(false)
+  const [docSelection, setDocSelection] = useState<DocStrokeSelection | null>(
+    null,
+  )
+  const moveDragRef = useRef<{
+    layerId: string
+    strokeId: string
+    last: [number, number]
+    pointerId: number
+  } | null>(null)
+  const documentRef = useRef(document)
+  documentRef.current = document
+
+  const selectionSyncKey = docSelection
+    ? `${docSelection.layerId}:${docSelection.strokeId}`
+    : null
+
+  const selectedStrokeForUi = useMemo(() => {
+    if (!docSelection) return null
+    const layer = document.layers.find((l) => l.id === docSelection.layerId)
+    return layer?.strokes.find((s) => s.id === docSelection.strokeId) ?? null
+  }, [document, docSelection])
+
+  useEffect(() => {
+    if (!open || !selectionSyncKey || !docSelection) return
+    const layer = documentRef.current.layers.find(
+      (l) => l.id === docSelection.layerId,
+    )
+    const s = layer?.strokes.find((x) => x.id === docSelection.strokeId)
+    if (!s) return
+    const canvas = canvasRef.current
+    const rw = canvas?.getBoundingClientRect().width ?? 1
+    const rh = canvas?.getBoundingClientRect().height ?? 1
+    const m = Math.max(1, Math.min(rw, rh))
+    const nextStroke =
+      s.stroke && strokePaintVisible(s.stroke) ? s.stroke : '#1a1a1a'
+    const nextFill =
+      s.fill && s.fill !== 'transparent' ? s.fill : '#94a3b8'
+    const nextW = Math.min(16, Math.max(1, Math.round(s.strokeWidthN * m)))
+    setStrokeColor(nextStroke)
+    setFillColor(nextFill)
+    setStrokeWidthPx(nextW)
+  }, [open, selectionSyncKey, docSelection])
 
   const paintFrame = useCallback(() => {
     const wrap = wrapRef.current
@@ -609,6 +809,7 @@ export default function VectorBoardWorkspace({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     drawGrid(ctx, w, h)
     paintDocument(ctx, document, w, h)
+    paintDocSelection(ctx, document, docSelection, w, h)
     paintDraft(
       ctx,
       draftRef.current,
@@ -617,8 +818,18 @@ export default function VectorBoardWorkspace({
       strokeColor,
       strokeWidthPx,
       fillColor,
+      penRemoveHintIndex,
+      penCloseHover,
     )
-  }, [document, strokeColor, strokeWidthPx, fillColor])
+  }, [
+    document,
+    strokeColor,
+    strokeWidthPx,
+    fillColor,
+    penRemoveHintIndex,
+    penCloseHover,
+    docSelection,
+  ])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -636,9 +847,29 @@ export default function VectorBoardWorkspace({
   }, [draft, open, paintFrame])
 
   useEffect(() => {
+    if (!open) {
+      const m = moveDragRef.current
+      if (m) releasePointerIfCaptured(canvasRef.current, m.pointerId)
+      setDocSelection(null)
+      moveDragRef.current = null
+    }
+  }, [open])
+
+  useEffect(() => {
+    const m = moveDragRef.current
+    if (m) releasePointerIfCaptured(canvasRef.current, m.pointerId)
+    moveDragRef.current = null
     if (tool !== 'pen' && draftRef.current?.kind === 'pen-bezier') {
       draftRef.current = null
       setDraft(null)
+    }
+    setPenRemoveHintIndex(null)
+    setPenCloseHover(false)
+    const c = canvasRef.current
+    if (c) {
+      if (tool === 'pen') c.style.cursor = CURSOR_PEN_ADD
+      else if (tool === 'move') c.style.cursor = 'grab'
+      else c.style.cursor = 'crosshair'
     }
   }, [tool])
 
@@ -693,25 +924,33 @@ export default function VectorBoardWorkspace({
     return strokeWidthPx / m
   }, [strokeWidthPx])
 
-  const commitPenBezierDraft = useCallback(() => {
-    const d = draftRef.current
-    if (d?.kind !== 'pen-bezier' || d.anchors.length < 2) return
-    commitStrokeToActiveLayer({
-      id: crypto.randomUUID(),
-      kind: 'pen',
-      points: [],
-      penAnchors: d.anchors.map((q) => ({ ...q })),
-      stroke: strokeColor,
-      strokeWidthN: strokeWidthNFromCanvas(),
-      fill: '',
-    })
-    draftRef.current = null
-    setDraft(null)
-  }, [
-    commitStrokeToActiveLayer,
-    strokeColor,
-    strokeWidthNFromCanvas,
-  ])
+  const commitPenBezierDraft = useCallback(
+    (closed = false) => {
+      const d = draftRef.current
+      if (d?.kind !== 'pen-bezier' || d.anchors.length < 2) return
+      const fill =
+        closed &&
+        fillColor &&
+        fillColor !== 'transparent'
+          ? fillColor
+          : ''
+      commitStrokeToActiveLayer({
+        id: crypto.randomUUID(),
+        kind: 'pen',
+        points: [],
+        penAnchors: d.anchors.map((q) => ({ ...q })),
+        penClosed: closed ? true : undefined,
+        stroke: strokeColor,
+        strokeWidthN: strokeWidthNFromCanvas(),
+        fill,
+      })
+      draftRef.current = null
+      setDraft(null)
+      setPenRemoveHintIndex(null)
+      setPenCloseHover(false)
+    },
+    [commitStrokeToActiveLayer, fillColor, strokeColor, strokeWidthNFromCanvas],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -736,7 +975,8 @@ export default function VectorBoardWorkspace({
     if (
       tool === 'rect' ||
       tool === 'ellipse' ||
-      tool === 'polygon'
+      tool === 'polygon' ||
+      tool === 'pen'
     ) {
       return fillColor && fillColor !== 'transparent' ? fillColor : ''
     }
@@ -748,22 +988,27 @@ export default function VectorBoardWorkspace({
     const p = toNorm(e.clientX, e.clientY)
     if (!p) return
 
-    if (tool === 'eraser') {
-      const next = eraseNearestStroke(document, p[0], p[1])
-      if (next) onDocumentChange(next)
-      return
-    }
-
-    if (tool === 'fill') {
-      const next = fillTopClosedShapeAt(document, p[0], p[1], fillColor)
-      if (next) onDocumentChange(next)
+    if (tool === 'move') {
+      const hit = findTopStrokeAt(document, p[0], p[1])
+      if (!hit) {
+        setDocSelection(null)
+        return
+      }
+      setDocSelection({ layerId: hit.layerId, strokeId: hit.stroke.id })
+      moveDragRef.current = {
+        layerId: hit.layerId,
+        strokeId: hit.stroke.id,
+        last: p,
+        pointerId: e.pointerId,
+      }
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      const c = canvasRef.current
+      if (c) c.style.cursor = 'grabbing'
       return
     }
 
     const active = getActiveLayer(document)
     if (!active || !active.visible) return
-
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
 
     if (tool === 'pen') {
       const cur = draftRef.current
@@ -785,6 +1030,29 @@ export default function VectorBoardWorkspace({
           return
         }
         if (hit?.type === 'anchor') {
+          if (e.altKey) {
+            const nextAnchors = removePenAnchorAt(cur.anchors, hit.anchorIndex)
+            if (nextAnchors.length === 0) {
+              draftRef.current = null
+              setDraft(null)
+            } else {
+              const next: PenBezierDraftState = {
+                ...cur,
+                anchors: nextAnchors,
+                selectedAnchor: null,
+                drag: null,
+              }
+              draftRef.current = next
+              setDraft(next)
+            }
+            setPenRemoveHintIndex(null)
+            setPenCloseHover(false)
+            return
+          }
+          if (hit.anchorIndex === 0 && cur.anchors.length >= 2) {
+            commitPenBezierDraft(true)
+            return
+          }
           const next: PenBezierDraftState = {
             ...cur,
             selectedAnchor: hit.anchorIndex,
@@ -839,10 +1107,57 @@ export default function VectorBoardWorkspace({
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (tool === 'eraser' || tool === 'fill') return
+    const pt = toNorm(e.clientX, e.clientY)
+    const canvas = canvasRef.current
+
+    if (tool === 'move' && moveDragRef.current && pt) {
+      const m = moveDragRef.current
+      const ddx = pt[0] - m.last[0]
+      const ddy = pt[1] - m.last[1]
+      m.last = pt
+      onDocumentChange(
+        applyTranslateStrokeInDoc(
+          document,
+          m.layerId,
+          m.strokeId,
+          ddx,
+          ddy,
+        ),
+      )
+      return
+    }
+
+    if (tool === 'pen' && pt && canvas) {
+      const cur = draftRef.current
+      if (cur?.kind === 'pen-bezier' && e.altKey) {
+        const hit = hitTestPenBezier(cur, pt[0], pt[1])
+        if (hit?.type === 'anchor') {
+          setPenRemoveHintIndex(hit.anchorIndex)
+          setPenCloseHover(false)
+          canvas.style.cursor = CURSOR_PEN_REMOVE
+        } else {
+          setPenRemoveHintIndex(null)
+          setPenCloseHover(false)
+          canvas.style.cursor = CURSOR_PEN_ADD
+        }
+      } else if (cur?.kind === 'pen-bezier' && !e.altKey && cur.anchors.length >= 2) {
+        const hit = hitTestPenBezier(cur, pt[0], pt[1])
+        const ch = hit?.type === 'anchor' && hit.anchorIndex === 0
+        setPenCloseHover(ch)
+        setPenRemoveHintIndex(null)
+        canvas.style.cursor = CURSOR_PEN_ADD
+      } else {
+        setPenRemoveHintIndex(null)
+        setPenCloseHover(false)
+        canvas.style.cursor = CURSOR_PEN_ADD
+      }
+    } else if (tool !== 'pen') {
+      setPenRemoveHintIndex(null)
+      setPenCloseHover(false)
+    }
+
     const d = draftRef.current
     if (!d) return
-    const pt = toNorm(e.clientX, e.clientY)
     if (!pt) return
 
     if (d.kind === 'pen-bezier' && d.drag) {
@@ -901,7 +1216,20 @@ export default function VectorBoardWorkspace({
   }
 
   const onPointerUp = (e: React.PointerEvent) => {
-    if (tool === 'eraser' || tool === 'fill') return
+    if (tool === 'move' && moveDragRef.current) {
+      moveDragRef.current = null
+      const el = e.target as HTMLElement
+      if (
+        typeof el.hasPointerCapture === 'function' &&
+        el.hasPointerCapture(e.pointerId)
+      ) {
+        el.releasePointerCapture(e.pointerId)
+      }
+      const c = canvasRef.current
+      if (c) c.style.cursor = 'grab'
+      return
+    }
+
     const d = draftRef.current
     if (!d) return
 
@@ -1000,6 +1328,9 @@ export default function VectorBoardWorkspace({
   const clearActiveLayer = () => {
     const active = getActiveLayer(document)
     if (!active) return
+    setDocSelection((prev) =>
+      prev && prev.layerId === active.id ? null : prev,
+    )
     onDocumentChange({
       ...document,
       layers: document.layers.map((L) =>
@@ -1009,6 +1340,7 @@ export default function VectorBoardWorkspace({
   }
 
   const clearAll = () => {
+    setDocSelection(null)
     onDocumentChange(emptyVectorBoardDocument())
   }
 
@@ -1054,11 +1386,19 @@ export default function VectorBoardWorkspace({
   if (!open) return null
 
   const canPlace = vectorDocHasRenderableStrokes(document)
+  const fillAppliesToSelected =
+    selectedStrokeForUi &&
+    (selectedStrokeForUi.kind === 'rect' ||
+      selectedStrokeForUi.kind === 'ellipse' ||
+      selectedStrokeForUi.kind === 'polygon' ||
+      (selectedStrokeForUi.kind === 'pen' &&
+        selectedStrokeForUi.penClosed === true))
   const showFill =
     tool === 'rect' ||
     tool === 'ellipse' ||
     tool === 'polygon' ||
-    tool === 'fill'
+    tool === 'pen' ||
+    (tool === 'move' && Boolean(fillAppliesToSelected))
 
   return (
     <div
@@ -1181,7 +1521,7 @@ export default function VectorBoardWorkspace({
             </h2>
             <button
               type="button"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-neutral-600 hover:bg-black/[0.06]"
+              className={floatingToolbarIconButton(false)}
               onClick={onClose}
               aria-label="Close vector workspace"
             >
@@ -1189,124 +1529,159 @@ export default function VectorBoardWorkspace({
             </button>
           </div>
 
-          <div className="flex shrink-0 flex-col gap-2 border-b border-black/[0.06] px-4 py-2.5 sm:px-5">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {(
-                [
-                  ['pencil', 'Pencil', Pen01Icon],
-                  ['pen', 'Pen', PenTool03Icon],
-                  ['line', 'Line', SolidLine01Icon],
-                  ['rect', 'Rectangle', SquareIcon],
-                  ['ellipse', 'Ellipse', CircleIcon],
-                  ['arrow', 'Arrow', ArrowRight01Icon],
-                  ['polygon', 'Polygon', PolygonIcon],
-                  ['fill', 'Fill', PaintBucketIcon],
-                  ['eraser', 'Eraser', EraserIcon],
-                ] as const
-              ).map(([id, label, icon]) => (
-                <button
-                  key={id}
-                  type="button"
-                  className={toolButtonClass(tool === id)}
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={tool === id}
-                  onClick={() => setTool(id)}
-                >
-                  <HugeiconsIcon
-                    icon={icon}
-                    size={18}
-                    strokeWidth={1.75}
-                  />
-                </button>
-              ))}
+          <div className="flex shrink-0 flex-col gap-2 border-b border-black/[0.06] bg-[linear-gradient(180deg,rgba(250,250,249,0.9)_0%,rgba(255,255,255,0.5)_100%)] px-4 py-3 sm:px-5">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <FloatingToolbarShell role="toolbar" aria-label="Drawing tools">
+                  <div className="flex flex-wrap items-center gap-0.5 py-1 pl-1 pr-2">
+                    {(
+                      [
+                        ['move', 'Move', Cursor02Icon],
+                        ['pencil', 'Pencil', Pen01Icon],
+                        ['pen', 'Pen', PenTool03Icon],
+                        ['line', 'Line', SolidLine01Icon],
+                        ['rect', 'Rectangle', SquareIcon],
+                        ['ellipse', 'Ellipse', CircleIcon],
+                        ['arrow', 'Arrow', ArrowRight01Icon],
+                        ['polygon', 'Polygon', PolygonIcon],
+                      ] as const
+                    ).map(([id, label, icon]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        className={floatingToolbarIconButton(tool === id)}
+                        title={label}
+                        aria-label={label}
+                        aria-pressed={tool === id}
+                        onClick={() => setTool(id)}
+                      >
+                        <HugeiconsIcon
+                          icon={icon}
+                          size={18}
+                          strokeWidth={1.75}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </FloatingToolbarShell>
+                <FloatingToolbarShell role="toolbar" aria-label="Stroke and fill">
+                  <div className="flex flex-wrap items-center gap-0.5 py-1 pl-1 pr-2">
+                    <StrokeToolbarPopover
+                      strokeWidthMin={1}
+                      strokeWidthMax={16}
+                      strokeWidthPx={strokeWidthPx}
+                      strokePaint={{ type: 'solid', color: strokeColor }}
+                      onStrokeWidthChange={(px) => {
+                        setStrokeWidthPx(px)
+                        if (docSelection) {
+                          const canvas = canvasRef.current
+                          const rw = canvas?.getBoundingClientRect().width ?? 1
+                          const rh = canvas?.getBoundingClientRect().height ?? 1
+                          const m = Math.max(1, Math.min(rw, rh))
+                          onDocumentChange(
+                            updateVectorStrokeInDoc(
+                              document,
+                              docSelection.layerId,
+                              docSelection.strokeId,
+                              { strokeWidthN: px / m },
+                            ),
+                          )
+                        }
+                      }}
+                      onStrokePaintChange={(v) => {
+                        const hex = bgValuePreferSolid(v)
+                        setStrokeColor(hex)
+                        if (docSelection) {
+                          onDocumentChange(
+                            updateVectorStrokeInDoc(
+                              document,
+                              docSelection.layerId,
+                              docSelection.strokeId,
+                              { stroke: hex },
+                            ),
+                          )
+                        }
+                      }}
+                    />
+                    {showFill ? (
+                      <>
+                        <FloatingToolbarDivider />
+                        <PaintPopoverControl
+                          compact
+                          value={{ type: 'solid', color: fillColor }}
+                          onChange={(v) => {
+                            const hex = bgValuePreferSolid(v)
+                            setFillColor(hex)
+                            if (docSelection) {
+                              const fill =
+                                hex && hex !== 'transparent' ? hex : ''
+                              onDocumentChange(
+                                updateVectorStrokeInDoc(
+                                  document,
+                                  docSelection.layerId,
+                                  docSelection.strokeId,
+                                  { fill },
+                                ),
+                              )
+                            }
+                          }}
+                          title="Fill color"
+                          ariaLabel="Fill color"
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                </FloatingToolbarShell>
+              </div>
+              <div className="ml-auto flex shrink-0 items-center">
+                <FloatingToolbarShell aria-label="Board actions">
+                  <div className="flex flex-wrap items-center justify-end gap-0.5 py-1 pl-1 pr-2">
+                    <button
+                      type="button"
+                      className={[
+                        floatingToolbarIconButton(false, { wide: true }),
+                        'px-2.5 text-[13px] font-medium',
+                      ].join(' ')}
+                      onClick={clearActiveLayer}
+                    >
+                      Clear layer
+                    </button>
+                    <FloatingToolbarDivider />
+                    <button
+                      type="button"
+                      className={[
+                        floatingToolbarIconButton(false, { wide: true }),
+                        'px-2.5 text-[13px] font-medium',
+                      ].join(' ')}
+                      onClick={clearAll}
+                    >
+                      Clear all
+                    </button>
+                    <FloatingToolbarDivider />
+                    <button
+                      type="button"
+                      disabled={!canPlace}
+                      className={[
+                        'flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-[13px] font-semibold outline-none transition-colors',
+                        canPlace
+                          ? 'bg-neutral-900 text-white hover:bg-neutral-800'
+                          : 'cursor-not-allowed bg-neutral-200/90 text-neutral-500',
+                      ].join(' ')}
+                      onClick={onRequestPlaceOnCanvas}
+                    >
+                      Place on canvas
+                    </button>
+                  </div>
+                </FloatingToolbarShell>
+              </div>
             </div>
             {tool === 'pen' ? (
               <p className="m-0 text-[11px] leading-snug text-neutral-500">
-                Click for corners (straight segments) or drag while placing for
-                curves. Drag handle diamonds to adjust. Press Enter to finish the
-                path.
+                Plus cursor adds points; drag while placing for curves. Alt-click
+                an anchor to remove it. Click the first point again to close the
+                shape (fill applies when closed). Enter finishes without closing.
               </p>
             ) : null}
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 text-[13px] text-neutral-700">
-                <span className="text-neutral-500">Stroke</span>
-                <input
-                  type="color"
-                  value={strokeColor}
-                  onChange={(e) => setStrokeColor(e.target.value)}
-                  className="h-8 w-10 cursor-pointer rounded border border-black/15 bg-white p-0"
-                  aria-label="Stroke color"
-                />
-              </label>
-              {showFill ? (
-                <label className="flex items-center gap-2 text-[13px] text-neutral-700">
-                  <span className="text-neutral-500">Fill</span>
-                  <input
-                    type="color"
-                    value={fillColor}
-                    onChange={(e) => setFillColor(e.target.value)}
-                    className="h-8 w-10 cursor-pointer rounded border border-black/15 bg-white p-0"
-                    aria-label="Fill color"
-                  />
-                </label>
-              ) : null}
-              <div className="flex min-w-[7rem] flex-1 items-center gap-2 text-[13px] text-neutral-700 sm:max-w-[11rem]">
-                <span className="shrink-0 text-neutral-500">Width</span>
-                <EditorRangeSlider
-                  min={1}
-                  max={16}
-                  step={1}
-                  value={strokeWidthPx}
-                  onChange={setStrokeWidthPx}
-                  aria-label="Stroke width"
-                  aria-valuemin={1}
-                  aria-valuemax={16}
-                  aria-valuenow={strokeWidthPx}
-                  trackClassName="min-w-0 flex-1"
-                />
-              </div>
-              <button
-                type="button"
-                className="rounded-lg border border-black/[0.1] bg-white px-3 py-1.5 text-[13px] font-medium text-neutral-800 hover:bg-black/[0.04]"
-                onClick={clearActiveLayer}
-              >
-                Clear layer
-              </button>
-              <button
-                type="button"
-                className="rounded-lg border border-black/[0.1] bg-white px-3 py-1.5 text-[13px] font-medium text-neutral-800 hover:bg-black/[0.04]"
-                onClick={clearAll}
-              >
-                Clear all
-              </button>
-              <button
-                type="button"
-                disabled={!canPlace}
-                className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-neutral-800 disabled:pointer-events-none disabled:opacity-40"
-                onClick={onRequestPlaceOnCanvas}
-              >
-                Place on canvas
-              </button>
-              <div
-                draggable
-                onDragStart={(e) => {
-                  if (!canPlace) {
-                    e.preventDefault()
-                    return
-                  }
-                  e.dataTransfer.setData(AVNAC_VECTOR_BOARD_DRAG_MIME, boardId)
-                  e.dataTransfer.effectAllowed = 'copy'
-                }}
-                className={[
-                  'cursor-grab select-none rounded-lg border border-dashed border-black/20 bg-neutral-50 px-3 py-1.5 text-[13px] font-medium text-neutral-700 active:cursor-grabbing',
-                  !canPlace ? 'pointer-events-none opacity-40' : '',
-                ].join(' ')}
-                title="Drag onto the artboard to place"
-              >
-                Drag to canvas
-              </div>
-            </div>
           </div>
 
           <div
@@ -1322,6 +1697,16 @@ export default function VectorBoardWorkspace({
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
+              onPointerLeave={() => {
+                setPenRemoveHintIndex(null)
+                setPenCloseHover(false)
+                const c = canvasRef.current
+                if (c) {
+                  if (tool === 'pen') c.style.cursor = CURSOR_PEN_ADD
+                  else if (tool === 'move') c.style.cursor = 'grab'
+                  else c.style.cursor = 'crosshair'
+                }
+              }}
             />
           </div>
         </div>
