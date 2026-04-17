@@ -5,10 +5,12 @@ import {
   ArrowUp01Icon,
   Cancel01Icon,
   CircleIcon,
+  Cursor01Icon,
+  CursorAddSelection01Icon,
+  CursorRemoveSelection01Icon,
   Delete02Icon,
   Pen01Icon,
   PenTool03Icon,
-  Cursor02Icon,
   SquareIcon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -37,7 +39,9 @@ import {
 } from '../lib/avnac-vector-pen-bezier'
 import {
   appendClonedStrokesToActiveLayer,
+  applyScaleStrokesInDoc,
   applyTranslateStrokesInDoc,
+  applyZOrderInDoc,
   createVectorBoardLayer,
   duplicateSelectionsInPlace,
   emptyVectorBoardDocument,
@@ -45,9 +49,10 @@ import {
   findTopStrokeAt,
   getActiveLayer,
   getStrokesForSelections,
-  normBoundsForStroke,
+  normBoundsForSelections,
   parseVectorStrokeClipboardText,
   removeStrokesFromDoc,
+  updateStrokeInDocFull,
   updateVectorStrokeInDoc,
   vectorDocHasRenderableStrokes,
   vectorStrokeOutlineIsVisible,
@@ -66,11 +71,61 @@ const PEN_HIT_R = 0.017
 const PEN_HIT_R_SQ = PEN_HIT_R * PEN_HIT_R
 const PEN_CORNER_DRAG = 0.005
 
-const CURSOR_PEN_ADD =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Cpath d='M11 4v14M4 11h14' stroke='%231e293b' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\") 11 11, crosshair"
+type HugeiconSvgShape = readonly (readonly [
+  string,
+  { readonly [key: string]: string | number },
+])[]
 
-const CURSOR_PEN_REMOVE =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Cpath d='M5 5l12 12M17 5L5 17' stroke='%23dc2626' stroke-width='2.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\") 11 11, not-allowed"
+function hugeiconToCursorCss(
+  icon: HugeiconSvgShape,
+  hotspotX: number,
+  hotspotY: number,
+  color: string,
+  fallback: string,
+): string {
+  const inner = icon
+    .map(([tag, raw]) => {
+      const attrs = Object.entries(raw)
+        .filter(([k]) => k !== 'key')
+        .map(([k, v]) => {
+          const kebab = k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)
+          const val = String(v).replace(/currentColor/g, color)
+          return `${kebab}="${val}"`
+        })
+        .join(' ')
+      return `<${tag} ${attrs} />`
+    })
+    .join('')
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">${inner}</svg>`
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hotspotX} ${hotspotY}, ${fallback}`
+}
+
+const CURSOR_MOVE = hugeiconToCursorCss(Cursor01Icon, 7, 2, '#1e293b', 'default')
+
+const CURSOR_PEN_ADD = hugeiconToCursorCss(
+  CursorAddSelection01Icon,
+  10,
+  4,
+  '#1e293b',
+  'crosshair',
+)
+
+const CURSOR_PEN_REMOVE = hugeiconToCursorCss(
+  CursorRemoveSelection01Icon,
+  10,
+  4,
+  '#dc2626',
+  'not-allowed',
+)
+
+function pointerAltKey(
+  e: Pick<PointerEvent, 'altKey' | 'getModifierState'>,
+): boolean {
+  return (
+    e.altKey ||
+    (typeof e.getModifierState === 'function' && e.getModifierState('Alt'))
+  )
+}
 
 function releasePointerIfCaptured(
   el: HTMLElement | null,
@@ -100,6 +155,80 @@ type MarqueeRect = {
   minY: number
   maxX: number
   maxY: number
+}
+
+type ResizeHandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+
+const RESIZE_HANDLE_IDS: ResizeHandleId[] = [
+  'nw',
+  'n',
+  'ne',
+  'e',
+  'se',
+  's',
+  'sw',
+  'w',
+]
+
+const RESIZE_HANDLE_CURSORS: Record<ResizeHandleId, string> = {
+  nw: 'nwse-resize',
+  n: 'ns-resize',
+  ne: 'nesw-resize',
+  e: 'ew-resize',
+  se: 'nwse-resize',
+  s: 'ns-resize',
+  sw: 'nesw-resize',
+  w: 'ew-resize',
+}
+
+function handlePositionInBounds(
+  id: ResizeHandleId,
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+): [number, number] {
+  const cx = (b.minX + b.maxX) / 2
+  const cy = (b.minY + b.maxY) / 2
+  switch (id) {
+    case 'nw':
+      return [b.minX, b.minY]
+    case 'n':
+      return [cx, b.minY]
+    case 'ne':
+      return [b.maxX, b.minY]
+    case 'e':
+      return [b.maxX, cy]
+    case 'se':
+      return [b.maxX, b.maxY]
+    case 's':
+      return [cx, b.maxY]
+    case 'sw':
+      return [b.minX, b.maxY]
+    case 'w':
+      return [b.minX, cy]
+  }
+}
+
+function anchorForHandle(
+  id: ResizeHandleId,
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+): [number, number] {
+  switch (id) {
+    case 'nw':
+      return [b.maxX, b.maxY]
+    case 'n':
+      return [(b.minX + b.maxX) / 2, b.maxY]
+    case 'ne':
+      return [b.minX, b.maxY]
+    case 'e':
+      return [b.minX, (b.minY + b.maxY) / 2]
+    case 'se':
+      return [b.minX, b.minY]
+    case 's':
+      return [(b.minX + b.maxX) / 2, b.minY]
+    case 'sw':
+      return [b.maxX, b.minY]
+    case 'w':
+      return [b.maxX, (b.minY + b.maxY) / 2]
+  }
 }
 
 type ShapeDraftTool = 'rect' | 'ellipse'
@@ -195,6 +324,46 @@ function removePenAnchorAt(
   return copy
 }
 
+/** Trace pen Bézier through anchors; `closed` adds segment from last → first. */
+function tracePenBezierPath(
+  ctx: CanvasRenderingContext2D,
+  anchors: VectorPenAnchor[],
+  w: number,
+  h: number,
+  closed: boolean,
+) {
+  if (anchors.length < 2) return
+  ctx.moveTo(anchors[0]!.x * w, anchors[0]!.y * h)
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i]!
+    const b = anchors[i + 1]!
+    const [x1, y1] = ctrlOutAbs(a)
+    const [x2, y2] = ctrlInAbs(b)
+    ctx.bezierCurveTo(
+      x1 * w,
+      y1 * h,
+      x2 * w,
+      y2 * h,
+      b.x * w,
+      b.y * h,
+    )
+  }
+  if (closed && anchors.length >= 2) {
+    const last = anchors[anchors.length - 1]!
+    const first = anchors[0]!
+    const [lx1, ly1] = ctrlOutAbs(last)
+    const [lx2, ly2] = ctrlInAbs(first)
+    ctx.bezierCurveTo(
+      lx1 * w,
+      ly1 * h,
+      lx2 * w,
+      ly2 * h,
+      first.x * w,
+      first.y * h,
+    )
+  }
+}
+
 function paintHandleDiamond(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -224,6 +393,7 @@ function paintPenBezierDraft(
   fillColor: string,
   removeHintIndex: number | null,
   closeHover: boolean,
+  viewScale: number,
 ) {
   const { anchors, selectedAnchor } = draft
   if (anchors.length >= 2) {
@@ -236,59 +406,22 @@ function paintPenBezierDraft(
       anchors.length >= 3
     ) {
       ctx.beginPath()
-      ctx.moveTo(anchors[0]!.x * w, anchors[0]!.y * h)
-      for (let i = 0; i < anchors.length - 1; i++) {
-        const a = anchors[i]!
-        const b = anchors[i + 1]!
-        const [x1, y1] = ctrlOutAbs(a)
-        const [x2, y2] = ctrlInAbs(b)
-        ctx.bezierCurveTo(
-          x1 * w,
-          y1 * h,
-          x2 * w,
-          y2 * h,
-          b.x * w,
-          b.y * h,
-        )
-      }
-      const last = anchors[anchors.length - 1]!
-      const first = anchors[0]!
-      const [lx1, ly1] = ctrlOutAbs(last)
-      const [lx2, ly2] = ctrlInAbs(first)
-      ctx.bezierCurveTo(
-        lx1 * w,
-        ly1 * h,
-        lx2 * w,
-        ly2 * h,
-        first.x * w,
-        first.y * h,
-      )
+      tracePenBezierPath(ctx, anchors, w, h, true)
       ctx.fillStyle = fillColor
       ctx.globalAlpha = 0.35
       ctx.fill()
       ctx.globalAlpha = 1
     }
+    ctx.beginPath()
+    tracePenBezierPath(ctx, anchors, w, h, false)
     if (strokeWidthPx > 0) {
       ctx.strokeStyle = strokeColor
       ctx.lineWidth = strokeWidthPx
-      ctx.beginPath()
-      ctx.moveTo(anchors[0]!.x * w, anchors[0]!.y * h)
-      for (let i = 0; i < anchors.length - 1; i++) {
-        const a = anchors[i]!
-        const b = anchors[i + 1]!
-        const [x1, y1] = ctrlOutAbs(a)
-        const [x2, y2] = ctrlInAbs(b)
-        ctx.bezierCurveTo(
-          x1 * w,
-          y1 * h,
-          x2 * w,
-          y2 * h,
-          b.x * w,
-          b.y * h,
-        )
-      }
-      ctx.stroke()
+    } else {
+      ctx.strokeStyle = 'rgba(71, 85, 105, 0.82)'
+      ctx.lineWidth = Math.max(0.75, 1 / Math.max(0.001, viewScale))
     }
+    ctx.stroke()
   }
 
   if (closeHover && anchors.length >= 2) {
@@ -577,6 +710,7 @@ function paintDraft(
   fillColor: string,
   penRemoveHintIndex: number | null,
   penCloseHover: boolean,
+  viewScale: number,
 ) {
   if (!draft) return
   if (draft.kind === 'pen-bezier') {
@@ -590,6 +724,7 @@ function paintDraft(
       fillColor,
       penRemoveHintIndex,
       penCloseHover,
+      viewScale,
     )
     return
   }
@@ -684,40 +819,12 @@ function constrainShapeEnd(
   return [a[0] + (sx * m) / Math.max(1, w), a[1] + (sy * m) / Math.max(1, h)]
 }
 
-function paintDocSelection(
-  ctx: CanvasRenderingContext2D,
-  doc: VectorBoardDocument,
-  selections: DocStrokeSelection[],
-  w: number,
-  h: number,
-) {
-  if (selections.length === 0) return
-  ctx.save()
-  ctx.strokeStyle = '#2563eb'
-  ctx.lineWidth = 1.5
-  ctx.setLineDash([6, 4])
-  const pad = 0.01
-  for (const sel of selections) {
-    const layer = doc.layers.find((l) => l.id === sel.layerId)
-    if (!layer?.visible) continue
-    const s = layer.strokes.find((x) => x.id === sel.strokeId)
-    if (!s) continue
-    const b = normBoundsForStroke(s)
-    if (!b) continue
-    const x0 = (b.minX - pad) * w
-    const y0 = (b.minY - pad) * h
-    const rw = (b.maxX - b.minX + pad * 2) * w
-    const rh = (b.maxY - b.minY + pad * 2) * h
-    ctx.strokeRect(x0, y0, Math.max(1, rw), Math.max(1, rh))
-  }
-  ctx.restore()
-}
-
 function paintMarqueeRect(
   ctx: CanvasRenderingContext2D,
   rect: MarqueeRect | null,
   w: number,
   h: number,
+  viewScale: number,
 ) {
   if (!rect) return
   const x0 = rect.minX * w
@@ -728,9 +835,116 @@ function paintMarqueeRect(
   ctx.save()
   ctx.fillStyle = 'rgba(37,99,235,0.08)'
   ctx.strokeStyle = 'rgba(37,99,235,0.75)'
-  ctx.lineWidth = 1
+  ctx.lineWidth = 1 / viewScale
   ctx.fillRect(x0, y0, rw, rh)
   ctx.strokeRect(x0, y0, rw, rh)
+  ctx.restore()
+}
+
+function paintTransformHandles(
+  ctx: CanvasRenderingContext2D,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number } | null,
+  w: number,
+  h: number,
+  viewScale: number,
+) {
+  if (!bounds) return
+  const x0 = bounds.minX * w
+  const y0 = bounds.minY * h
+  const x1 = bounds.maxX * w
+  const y1 = bounds.maxY * h
+  ctx.save()
+  ctx.strokeStyle = '#2563eb'
+  ctx.lineWidth = 1 / viewScale
+  ctx.strokeRect(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0))
+  const s = 8 / viewScale
+  const half = s / 2
+  for (const id of RESIZE_HANDLE_IDS) {
+    const [hx, hy] = handlePositionInBounds(id, bounds)
+    const px = hx * w - half
+    const py = hy * h - half
+    ctx.fillStyle = '#ffffff'
+    ctx.strokeStyle = '#2563eb'
+    ctx.lineWidth = 1 / viewScale
+    ctx.fillRect(px, py, s, s)
+    ctx.strokeRect(px, py, s, s)
+  }
+  ctx.restore()
+}
+
+function paintPenEditOverlay(
+  ctx: CanvasRenderingContext2D,
+  doc: VectorBoardDocument,
+  sel: DocStrokeSelection | null,
+  w: number,
+  h: number,
+  viewScale: number,
+) {
+  if (!sel) return
+  const layer = doc.layers.find((l) => l.id === sel.layerId)
+  if (!layer?.visible) return
+  const stroke = layer.strokes.find((s) => s.id === sel.strokeId)
+  if (!stroke || stroke.kind !== 'pen' || !stroke.penAnchors) return
+  const anchors = stroke.penAnchors
+  if (anchors.length === 0) return
+  ctx.save()
+  if (anchors.length >= 2) {
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = vectorStrokeOutlineIsVisible(stroke)
+      ? 'rgba(100, 116, 139, 0.42)'
+      : 'rgba(71, 85, 105, 0.88)'
+    ctx.lineWidth = Math.max(0.75, 1 / Math.max(0.001, viewScale))
+    ctx.beginPath()
+    tracePenBezierPath(
+      ctx,
+      anchors,
+      w,
+      h,
+      stroke.penClosed === true,
+    )
+    ctx.stroke()
+  }
+  ctx.strokeStyle = 'rgba(37,99,235,0.5)'
+  ctx.lineWidth = 1 / viewScale
+  for (const a of anchors) {
+    if (a.inX != null && a.inY != null) {
+      ctx.beginPath()
+      ctx.moveTo(a.x * w, a.y * h)
+      ctx.lineTo(a.inX * w, a.inY * h)
+      ctx.stroke()
+    }
+    if (a.outX != null && a.outY != null) {
+      ctx.beginPath()
+      ctx.moveTo(a.x * w, a.y * h)
+      ctx.lineTo(a.outX * w, a.outY * h)
+      ctx.stroke()
+    }
+  }
+  const r = 3 / viewScale
+  for (const a of anchors) {
+    if (a.inX != null && a.inY != null) {
+      ctx.fillStyle = '#2563eb'
+      ctx.beginPath()
+      ctx.arc(a.inX * w, a.inY * h, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    if (a.outX != null && a.outY != null) {
+      ctx.fillStyle = '#2563eb'
+      ctx.beginPath()
+      ctx.arc(a.outX * w, a.outY * h, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  const sz = 6 / viewScale
+  const half = sz / 2
+  for (const a of anchors) {
+    ctx.fillStyle = '#ffffff'
+    ctx.strokeStyle = '#2563eb'
+    ctx.lineWidth = 1 / viewScale
+    ctx.fillRect(a.x * w - half, a.y * h - half, sz, sz)
+    ctx.strokeRect(a.x * w - half, a.y * h - half, sz, sz)
+  }
   ctx.restore()
 }
 
@@ -784,6 +998,53 @@ export default function VectorBoardWorkspace({
   const documentRef = useRef(document)
   documentRef.current = document
 
+  const [viewScale, setViewScale] = useState(1)
+  const [viewTx, setViewTx] = useState(0)
+  const [viewTy, setViewTy] = useState(0)
+  const viewRef = useRef({ scale: 1, tx: 0, ty: 0 })
+  viewRef.current = { scale: viewScale, tx: viewTx, ty: viewTy }
+
+  const spaceDownRef = useRef(false)
+  const panDragRef = useRef<{
+    startX: number
+    startY: number
+    startTx: number
+    startTy: number
+    pointerId: number
+  } | null>(null)
+
+  const historyRef = useRef<{
+    stack: VectorBoardDocument[]
+    index: number
+  }>({ stack: [document], index: 0 })
+
+  const resizeDragRef = useRef<{
+    handle: ResizeHandleId
+    snapshotDoc: VectorBoardDocument
+    snapshotSelections: DocStrokeSelection[]
+    bounds: { minX: number; minY: number; maxX: number; maxY: number }
+    anchor: [number, number]
+    startPt: [number, number]
+    pointerId: number
+  } | null>(null)
+
+  const [penEditSelection, setPenEditSelection] =
+    useState<DocStrokeSelection | null>(null)
+  const penEditSelectionRef = useRef<DocStrokeSelection | null>(null)
+  penEditSelectionRef.current = penEditSelection
+
+  const penEditDragRef = useRef<{
+    type: 'anchor' | 'handle-in' | 'handle-out'
+    anchorIndex: number
+    pointerId: number
+    last: [number, number]
+  } | null>(null)
+
+  const lastCanvasPointerClientRef = useRef<{ x: number; y: number } | null>(
+    null,
+  )
+  const altKeyHeldRef = useRef(false)
+
   const primarySelection =
     docSelection.length > 0 ? docSelection[docSelection.length - 1]! : null
   const selectionSyncKey = primarySelection
@@ -834,9 +1095,12 @@ export default function VectorBoardWorkspace({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, w, h)
+    ctx.save()
+    ctx.translate(viewTx, viewTy)
+    ctx.scale(viewScale, viewScale)
     drawGrid(ctx, w, h)
     paintDocument(ctx, document, w, h)
-    paintDocSelection(ctx, document, docSelection, w, h)
     paintDraft(
       ctx,
       draftRef.current,
@@ -847,8 +1111,15 @@ export default function VectorBoardWorkspace({
       fillColor,
       penRemoveHintIndex,
       penCloseHover,
+      viewScale,
     )
-    paintMarqueeRect(ctx, marqueeRect, w, h)
+    paintMarqueeRect(ctx, marqueeRect, w, h, viewScale)
+    if (!penEditSelection && !draftRef.current) {
+      const selBounds = normBoundsForSelections(document, docSelection)
+      paintTransformHandles(ctx, selBounds, w, h, viewScale)
+    }
+    paintPenEditOverlay(ctx, document, penEditSelection, w, h, viewScale)
+    ctx.restore()
   }, [
     document,
     strokeColor,
@@ -858,6 +1129,10 @@ export default function VectorBoardWorkspace({
     penCloseHover,
     docSelection,
     marqueeRect,
+    viewScale,
+    viewTx,
+    viewTy,
+    penEditSelection,
   ])
 
   useLayoutEffect(() => {
@@ -881,12 +1156,29 @@ export default function VectorBoardWorkspace({
       if (m) releasePointerIfCaptured(canvasRef.current, m.pointerId)
       const mq = marqueeRef.current
       if (mq) releasePointerIfCaptured(canvasRef.current, mq.pointerId)
+      const rd = resizeDragRef.current
+      if (rd) releasePointerIfCaptured(canvasRef.current, rd.pointerId)
+      const ped = penEditDragRef.current
+      if (ped) releasePointerIfCaptured(canvasRef.current, ped.pointerId)
+      const pn = panDragRef.current
+      if (pn) releasePointerIfCaptured(canvasRef.current, pn.pointerId)
       setDocSelection([])
       setMarqueeRect(null)
+      setPenEditSelection(null)
       moveDragRef.current = null
       marqueeRef.current = null
+      resizeDragRef.current = null
+      penEditDragRef.current = null
+      panDragRef.current = null
+      spaceDownRef.current = false
     }
   }, [open])
+
+  useEffect(() => {
+    if (tool !== 'move') {
+      setPenEditSelection(null)
+    }
+  }, [tool])
 
   useEffect(() => {
     const m = moveDragRef.current
@@ -901,7 +1193,7 @@ export default function VectorBoardWorkspace({
     const c = canvasRef.current
     if (c) {
       if (tool === 'pen') c.style.cursor = CURSOR_PEN_ADD
-      else if (tool === 'move') c.style.cursor = 'grab'
+      else if (tool === 'move') c.style.cursor = CURSOR_MOVE
       else c.style.cursor = 'crosshair'
     }
   }, [tool])
@@ -925,8 +1217,11 @@ export default function VectorBoardWorkspace({
       const canvas = canvasRef.current
       if (!canvas) return null
       const r = canvas.getBoundingClientRect()
-      const x = (clientX - r.left) / Math.max(1, r.width)
-      const y = (clientY - r.top) / Math.max(1, r.height)
+      const v = viewRef.current
+      const worldX = (clientX - r.left - v.tx) / v.scale
+      const worldY = (clientY - r.top - v.ty) / v.scale
+      const x = worldX / Math.max(1, r.width)
+      const y = worldY / Math.max(1, r.height)
       return [
         Math.max(0, Math.min(1, x)),
         Math.max(0, Math.min(1, y)),
@@ -934,6 +1229,273 @@ export default function VectorBoardWorkspace({
     },
     [],
   )
+
+  const toNormUnclamped = useCallback(
+    (clientX: number, clientY: number): [number, number] | null => {
+      const canvas = canvasRef.current
+      if (!canvas) return null
+      const r = canvas.getBoundingClientRect()
+      const v = viewRef.current
+      const worldX = (clientX - r.left - v.tx) / v.scale
+      const worldY = (clientY - r.top - v.ty) / v.scale
+      return [worldX / Math.max(1, r.width), worldY / Math.max(1, r.height)]
+    },
+    [],
+  )
+
+  const updatePenHoverCursor = useCallback(
+    (clientX: number, clientY: number, altHeld: boolean) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const penEdit = penEditSelectionRef.current
+      if (tool === 'move' && penEdit) {
+        if (penEditDragRef.current) return
+        const r = canvas.getBoundingClientRect()
+        const w = Math.max(1, r.width)
+        const h = Math.max(1, r.height)
+        const ptu = toNormUnclamped(clientX, clientY)
+        if (!ptu) return
+        const layer = documentRef.current.layers.find(
+          (l) => l.id === penEdit.layerId,
+        )
+        const stroke = layer?.strokes.find((s) => s.id === penEdit.strokeId)
+        if (stroke?.kind === 'pen' && stroke.penAnchors && altHeld) {
+          const hitR = 8 / (viewRef.current.scale * Math.min(w, h))
+          const hitR2 = hitR * hitR
+          for (let i = stroke.penAnchors.length - 1; i >= 0; i--) {
+            const a = stroke.penAnchors[i]!
+            const dx = ptu[0] - a.x
+            const dy = ptu[1] - a.y
+            if (dx * dx + dy * dy <= hitR2) {
+              canvas.style.cursor = CURSOR_PEN_REMOVE
+              return
+            }
+          }
+        }
+        canvas.style.cursor = CURSOR_MOVE
+        return
+      }
+
+      if (tool !== 'pen') return
+
+      const pt = toNorm(clientX, clientY)
+      if (!pt) return
+      const cur = draftRef.current
+      if (cur?.kind === 'pen-bezier' && altHeld) {
+        const hit = hitTestPenBezier(cur, pt[0], pt[1])
+        if (hit?.type === 'anchor') {
+          setPenRemoveHintIndex(hit.anchorIndex)
+          setPenCloseHover(false)
+          canvas.style.cursor = CURSOR_PEN_REMOVE
+        } else {
+          setPenRemoveHintIndex(null)
+          setPenCloseHover(false)
+          canvas.style.cursor = CURSOR_PEN_ADD
+        }
+      } else if (
+        cur?.kind === 'pen-bezier' &&
+        !altHeld &&
+        cur.anchors.length >= 2
+      ) {
+        const hit = hitTestPenBezier(cur, pt[0], pt[1])
+        const ch = hit?.type === 'anchor' && hit.anchorIndex === 0
+        setPenCloseHover(ch)
+        setPenRemoveHintIndex(null)
+        canvas.style.cursor = CURSOR_PEN_ADD
+      } else {
+        setPenRemoveHintIndex(null)
+        setPenCloseHover(false)
+        canvas.style.cursor = CURSOR_PEN_ADD
+      }
+    },
+    [tool, toNorm, toNormUnclamped],
+  )
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (
+        ev.key !== 'Alt' &&
+        ev.code !== 'AltLeft' &&
+        ev.code !== 'AltRight'
+      ) {
+        return
+      }
+      const last = lastCanvasPointerClientRef.current
+      if (!last) return
+      const altHeld = ev.type === 'keydown'
+      altKeyHeldRef.current = altHeld
+      updatePenHoverCursor(last.x, last.y, altHeld)
+    }
+    const onBlur = () => {
+      altKeyHeldRef.current = false
+      const last = lastCanvasPointerClientRef.current
+      if (last) updatePenHoverCursor(last.x, last.y, false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('keyup', onKey, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKey, true)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [open, updatePenHoverCursor])
+
+  const commit = useCallback(
+    (doc: VectorBoardDocument) => {
+      documentRef.current = doc
+      const h = historyRef.current
+      const truncated = h.stack.slice(0, h.index + 1)
+      truncated.push(doc)
+      const MAX = 200
+      const trimmed =
+        truncated.length > MAX ? truncated.slice(truncated.length - MAX) : truncated
+      historyRef.current = { stack: trimmed, index: trimmed.length - 1 }
+      onDocumentChange(doc)
+    },
+    [onDocumentChange],
+  )
+
+  const commitLive = useCallback(
+    (doc: VectorBoardDocument) => {
+      documentRef.current = doc
+      onDocumentChange(doc)
+    },
+    [onDocumentChange],
+  )
+
+  const undoVector = useCallback(() => {
+    const h = historyRef.current
+    if (h.index <= 0) return
+    const nextIndex = h.index - 1
+    const doc = h.stack[nextIndex]!
+    historyRef.current = { ...h, index: nextIndex }
+    documentRef.current = doc
+    setDocSelection((prev) =>
+      prev.filter((sel) => {
+        const L = doc.layers.find((l) => l.id === sel.layerId)
+        return L?.strokes.some((s) => s.id === sel.strokeId)
+      }),
+    )
+    setPenEditSelection(null)
+    onDocumentChange(doc)
+  }, [onDocumentChange])
+
+  const redoVector = useCallback(() => {
+    const h = historyRef.current
+    if (h.index >= h.stack.length - 1) return
+    const nextIndex = h.index + 1
+    const doc = h.stack[nextIndex]!
+    historyRef.current = { ...h, index: nextIndex }
+    documentRef.current = doc
+    setDocSelection((prev) =>
+      prev.filter((sel) => {
+        const L = doc.layers.find((l) => l.id === sel.layerId)
+        return L?.strokes.some((s) => s.id === sel.strokeId)
+      }),
+    )
+    setPenEditSelection(null)
+    onDocumentChange(doc)
+  }, [onDocumentChange])
+
+  useEffect(() => {
+    if (!open) return
+    historyRef.current = { stack: [documentRef.current], index: 0 }
+    setViewScale(1)
+    setViewTx(0)
+    setViewTy(0)
+  }, [open])
+
+  const zoomAt = useCallback(
+    (cx: number, cy: number, factor: number) => {
+      const v = viewRef.current
+      const nextScale = Math.max(0.2, Math.min(8, v.scale * factor))
+      if (Math.abs(nextScale - v.scale) < 1e-6) return
+      const worldX = (cx - v.tx) / v.scale
+      const worldY = (cy - v.ty) / v.scale
+      const nextTx = cx - worldX * nextScale
+      const nextTy = cy - worldY * nextScale
+      setViewScale(nextScale)
+      setViewTx(nextTx)
+      setViewTy(nextTy)
+    },
+    [],
+  )
+
+  const zoomAtCenter = useCallback(
+    (factor: number) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const r = canvas.getBoundingClientRect()
+      zoomAt(r.width / 2, r.height / 2, factor)
+    },
+    [zoomAt],
+  )
+
+  const resetView = useCallback(() => {
+    setViewScale(1)
+    setViewTx(0)
+    setViewTy(0)
+  }, [])
+
+  const fitView = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const r = canvas.getBoundingClientRect()
+    const b = normBoundsForSelections(
+      documentRef.current,
+      documentRef.current.layers.flatMap((L) =>
+        L.visible ? L.strokes.map((s) => ({ layerId: L.id, strokeId: s.id })) : [],
+      ),
+    )
+    if (!b) {
+      resetView()
+      return
+    }
+    const padNorm = 0.05
+    const minX = Math.max(0, b.minX - padNorm)
+    const minY = Math.max(0, b.minY - padNorm)
+    const maxX = Math.min(1, b.maxX + padNorm)
+    const maxY = Math.min(1, b.maxY + padNorm)
+    const worldW = (maxX - minX) * r.width
+    const worldH = (maxY - minY) * r.height
+    if (worldW <= 0 || worldH <= 0) {
+      resetView()
+      return
+    }
+    const nextScale = Math.max(
+      0.2,
+      Math.min(8, Math.min(r.width / worldW, r.height / worldH)),
+    )
+    const cx = ((minX + maxX) / 2) * r.width
+    const cy = ((minY + maxY) / 2) * r.height
+    setViewScale(nextScale)
+    setViewTx(r.width / 2 - cx * nextScale)
+    setViewTy(r.height / 2 - cy * nextScale)
+  }, [resetView])
+
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c || !open) return
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const r = c.getBoundingClientRect()
+        const cx = e.clientX - r.left
+        const cy = e.clientY - r.top
+        const factor = Math.exp(-e.deltaY * 0.01)
+        zoomAt(cx, cy, factor)
+        return
+      }
+      e.preventDefault()
+      setViewTx((tx) => tx - e.deltaX)
+      setViewTy((ty) => ty - e.deltaY)
+    }
+    c.addEventListener('wheel', onWheel, { passive: false })
+    return () => c.removeEventListener('wheel', onWheel)
+  }, [open, zoomAt])
 
   const appendPoint = useCallback(
     (pts: [number, number][], p: [number, number]) => {
@@ -951,7 +1513,7 @@ export default function VectorBoardWorkspace({
     (stroke: VectorBoardStroke) => {
       const active = getActiveLayer(document)
       if (!active) return
-      onDocumentChange({
+      commit({
         ...document,
         layers: document.layers.map((L) =>
           L.id !== active.id
@@ -960,7 +1522,7 @@ export default function VectorBoardWorkspace({
         ),
       })
     },
-    [document, onDocumentChange],
+    [document, commit],
   )
 
   const strokeWidthNFromCanvas = useCallback(() => {
@@ -1023,16 +1585,123 @@ export default function VectorBoardWorkspace({
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement
       if (t.closest('input, textarea, [contenteditable="true"]')) return
+
+      if (e.key === ' ' || e.code === 'Space') {
+        if (!spaceDownRef.current) {
+          spaceDownRef.current = true
+          const c = canvasRef.current
+          if (c && !panDragRef.current) c.style.cursor = 'grab'
+        }
+        if (!draftRef.current) e.preventDefault()
+        return
+      }
+
+      if (e.key === 'Escape') {
+        if (penEditSelectionRef.current) {
+          e.preventDefault()
+          setPenEditSelection(null)
+          return
+        }
+      }
+
       if (draftRef.current) return
+
+      if (e.metaKey || e.ctrlKey) {
+        if (e.key === 'z' || e.key === 'Z') {
+          e.preventDefault()
+          e.stopPropagation()
+          if (e.shiftKey) redoVector()
+          else undoVector()
+          return
+        }
+        if ((e.key === '=' || e.key === '+') && !e.shiftKey) {
+          e.preventDefault()
+          zoomAtCenter(1.2)
+          return
+        }
+        if (e.key === '-' || e.key === '_') {
+          e.preventDefault()
+          zoomAtCenter(1 / 1.2)
+          return
+        }
+        if (e.key === '0') {
+          e.preventDefault()
+          resetView()
+          return
+        }
+        if (e.key === '1') {
+          e.preventDefault()
+          fitView()
+          return
+        }
+        if (e.key === ']') {
+          if (docSelection.length === 0) return
+          e.preventDefault()
+          e.stopPropagation()
+          commit(
+            applyZOrderInDoc(
+              documentRef.current,
+              docSelection,
+              e.shiftKey ? 'front' : 'forward',
+            ),
+          )
+          return
+        }
+        if (e.key === '[') {
+          if (docSelection.length === 0) return
+          e.preventDefault()
+          e.stopPropagation()
+          commit(
+            applyZOrderInDoc(
+              documentRef.current,
+              docSelection,
+              e.shiftKey ? 'back' : 'backward',
+            ),
+          )
+          return
+        }
+      }
 
       if (e.key === 'Backspace' || e.key === 'Delete') {
         if (docSelection.length === 0) return
         e.preventDefault()
         e.stopPropagation()
         const next = removeStrokesFromDoc(documentRef.current, docSelection)
-        documentRef.current = next
-        onDocumentChange(next)
+        commit(next)
         setDocSelection([])
+        setPenEditSelection(null)
+        return
+      }
+
+      if (
+        (e.key === 'ArrowUp' ||
+          e.key === 'ArrowDown' ||
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowRight') &&
+        docSelection.length > 0 &&
+        !e.metaKey &&
+        !e.ctrlKey
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        const canvas = canvasRef.current
+        const r = canvas?.getBoundingClientRect()
+        const rw = r ? Math.max(1, r.width) : 1
+        const rh = r ? Math.max(1, r.height) : 1
+        const step = e.shiftKey ? 10 : 1
+        let dxp = 0
+        let dyp = 0
+        if (e.key === 'ArrowLeft') dxp = -step
+        if (e.key === 'ArrowRight') dxp = step
+        if (e.key === 'ArrowUp') dyp = -step
+        if (e.key === 'ArrowDown') dyp = step
+        const moved = applyTranslateStrokesInDoc(
+          documentRef.current,
+          docSelection,
+          dxp / rw,
+          dyp / rh,
+        )
+        commit(moved)
         return
       }
 
@@ -1073,8 +1742,7 @@ export default function VectorBoardWorkspace({
               VECTOR_CLIPBOARD_PASTE_OFFSET_N,
             )
             if (!appended) return
-            documentRef.current = appended.doc
-            onDocumentChange(appended.doc)
+            commit(appended.doc)
             const layer = getActiveLayer(appended.doc)
             if (layer) {
               setDocSelection(
@@ -1088,9 +1756,36 @@ export default function VectorBoardWorkspace({
         }
       }
     }
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === ' ' || e.code === 'Space') {
+        spaceDownRef.current = false
+        const c = canvasRef.current
+        if (c && !panDragRef.current) {
+          if (tool === 'pen') c.style.cursor = CURSOR_PEN_ADD
+          else if (tool === 'move') c.style.cursor = CURSOR_MOVE
+          else c.style.cursor = 'crosshair'
+        }
+      }
+    }
+
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, docSelection, onDocumentChange])
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
+  }, [
+    open,
+    docSelection,
+    commit,
+    undoVector,
+    redoVector,
+    zoomAtCenter,
+    resetView,
+    fitView,
+    tool,
+  ])
 
   const shapeFill = useCallback(() => {
     if (tool === 'rect' || tool === 'ellipse' || tool === 'pen') {
@@ -1100,7 +1795,144 @@ export default function VectorBoardWorkspace({
   }, [tool, fillColor])
 
   const onPointerDown = (e: React.PointerEvent) => {
+    const canvas = canvasRef.current
+    const r = canvas?.getBoundingClientRect()
+
+    if (e.button === 1 || (e.button === 0 && spaceDownRef.current)) {
+      panDragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startTx: viewRef.current.tx,
+        startTy: viewRef.current.ty,
+        pointerId: e.pointerId,
+      }
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      if (canvas) canvas.style.cursor = 'grabbing'
+      e.preventDefault()
+      return
+    }
+
     if (e.button !== 0) return
+
+    if (tool === 'move' && penEditSelection) {
+      const pt = toNormUnclamped(e.clientX, e.clientY)
+      if (pt && r) {
+        const layer = documentRef.current.layers.find(
+          (l) => l.id === penEditSelection.layerId,
+        )
+        const stroke = layer?.strokes.find(
+          (s) => s.id === penEditSelection.strokeId,
+        )
+        if (stroke?.kind === 'pen' && stroke.penAnchors) {
+          const hitR = 8 / (viewRef.current.scale * Math.min(r.width, r.height))
+          const hitR2 = hitR * hitR
+          for (let i = stroke.penAnchors.length - 1; i >= 0; i--) {
+            const a = stroke.penAnchors[i]!
+            if (a.outX != null && a.outY != null) {
+              const dx = pt[0] - a.outX
+              const dy = pt[1] - a.outY
+              if (dx * dx + dy * dy <= hitR2) {
+                penEditDragRef.current = {
+                  type: 'handle-out',
+                  anchorIndex: i,
+                  pointerId: e.pointerId,
+                  last: pt,
+                }
+                ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+                return
+              }
+            }
+            if (a.inX != null && a.inY != null) {
+              const dx = pt[0] - a.inX
+              const dy = pt[1] - a.inY
+              if (dx * dx + dy * dy <= hitR2) {
+                penEditDragRef.current = {
+                  type: 'handle-in',
+                  anchorIndex: i,
+                  pointerId: e.pointerId,
+                  last: pt,
+                }
+                ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+                return
+              }
+            }
+          }
+          for (let i = stroke.penAnchors.length - 1; i >= 0; i--) {
+            const a = stroke.penAnchors[i]!
+            const dx = pt[0] - a.x
+            const dy = pt[1] - a.y
+            if (dx * dx + dy * dy <= hitR2) {
+              if (pointerAltKey(e)) {
+                const nextAnchors = stroke.penAnchors
+                  .slice(0, i)
+                  .concat(stroke.penAnchors.slice(i + 1))
+                if (nextAnchors.length === 0) {
+                  const removed = removeStrokesFromDoc(documentRef.current, [
+                    penEditSelection,
+                  ])
+                  commit(removed)
+                  setPenEditSelection(null)
+                  setDocSelection([])
+                } else {
+                  commit(
+                    updateStrokeInDocFull(
+                      documentRef.current,
+                      penEditSelection.layerId,
+                      penEditSelection.strokeId,
+                      { penAnchors: nextAnchors },
+                    ),
+                  )
+                }
+                return
+              }
+              penEditDragRef.current = {
+                type: 'anchor',
+                anchorIndex: i,
+                pointerId: e.pointerId,
+                last: pt,
+              }
+              ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+              return
+            }
+          }
+        }
+      }
+      setPenEditSelection(null)
+    }
+
+    if (tool === 'move' && docSelection.length > 0 && r) {
+      const selBounds = normBoundsForSelections(
+        documentRef.current,
+        docSelection,
+      )
+      if (selBounds) {
+        const pt = toNormUnclamped(e.clientX, e.clientY)
+        if (pt) {
+          const hitPxR = 10
+          for (const id of RESIZE_HANDLE_IDS) {
+            const [hx, hy] = handlePositionInBounds(id, selBounds)
+            const dxp = (pt[0] - hx) * r.width * viewRef.current.scale
+            const dyp = (pt[1] - hy) * r.height * viewRef.current.scale
+            if (Math.hypot(dxp, dyp) <= hitPxR) {
+              const anchor = anchorForHandle(id, selBounds)
+              resizeDragRef.current = {
+                handle: id,
+                snapshotDoc: documentRef.current,
+                snapshotSelections: docSelection,
+                bounds: selBounds,
+                anchor,
+                startPt: pt,
+                pointerId: e.pointerId,
+              }
+              ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+              if (canvas) canvas.style.cursor = RESIZE_HANDLE_CURSORS[id]
+              return
+            }
+          }
+        }
+      }
+    }
+
     const p = toNorm(e.clientX, e.clientY)
     if (!p) return
 
@@ -1158,14 +1990,13 @@ export default function VectorBoardWorkspace({
         nextSelection = alreadySelected ? docSelection : [hitSel]
       }
 
-      if (e.altKey && nextSelection.length > 0) {
+      if (pointerAltKey(e) && nextSelection.length > 0) {
         const dup = duplicateSelectionsInPlace(
           documentRef.current,
           nextSelection,
         )
         if (dup) {
-          documentRef.current = dup.doc
-          onDocumentChange(dup.doc)
+          commitLive(dup.doc)
           nextSelection = dup.newSelections
         }
       }
@@ -1211,7 +2042,7 @@ export default function VectorBoardWorkspace({
           return
         }
         if (hit?.type === 'anchor') {
-          if (e.altKey) {
+          if (pointerAltKey(e)) {
             const nextAnchors = removePenAnchorAt(cur.anchors, hit.anchorIndex)
             if (nextAnchors.length === 0) {
               draftRef.current = null
@@ -1287,8 +2118,127 @@ export default function VectorBoardWorkspace({
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
-    const pt = toNorm(e.clientX, e.clientY)
     const canvas = canvasRef.current
+    lastCanvasPointerClientRef.current = { x: e.clientX, y: e.clientY }
+    altKeyHeldRef.current = pointerAltKey(e)
+
+    if (panDragRef.current) {
+      const pan = panDragRef.current
+      setViewTx(pan.startTx + (e.clientX - pan.startX))
+      setViewTy(pan.startTy + (e.clientY - pan.startY))
+      return
+    }
+
+    if (resizeDragRef.current) {
+      const rd = resizeDragRef.current
+      const cur = toNormUnclamped(e.clientX, e.clientY)
+      if (!cur) return
+      const handle = rd.handle
+      const affectsX =
+        handle === 'nw' ||
+        handle === 'ne' ||
+        handle === 'se' ||
+        handle === 'sw' ||
+        handle === 'e' ||
+        handle === 'w'
+      const affectsY =
+        handle === 'nw' ||
+        handle === 'ne' ||
+        handle === 'se' ||
+        handle === 'sw' ||
+        handle === 'n' ||
+        handle === 's'
+      const origHx = handlePositionInBounds(handle, rd.bounds)
+      let originX: number
+      let originY: number
+      let sx = 1
+      let sy = 1
+      if (pointerAltKey(e)) {
+        originX = (rd.bounds.minX + rd.bounds.maxX) / 2
+        originY = (rd.bounds.minY + rd.bounds.maxY) / 2
+      } else {
+        originX = rd.anchor[0]
+        originY = rd.anchor[1]
+      }
+      if (affectsX) {
+        const origDx = origHx[0] - originX
+        const curDx = cur[0] - originX
+        if (Math.abs(origDx) > 1e-9) sx = curDx / origDx
+      }
+      if (affectsY) {
+        const origDy = origHx[1] - originY
+        const curDy = cur[1] - originY
+        if (Math.abs(origDy) > 1e-9) sy = curDy / origDy
+      }
+      if (e.shiftKey) {
+        if (affectsX && affectsY) {
+          const m = Math.max(Math.abs(sx), Math.abs(sy))
+          sx = (sx < 0 ? -1 : 1) * m
+          sy = (sy < 0 ? -1 : 1) * m
+        } else if (affectsX) {
+          sy = Math.abs(sx) * (sy < 0 ? -1 : 1)
+        } else if (affectsY) {
+          sx = Math.abs(sy) * (sx < 0 ? -1 : 1)
+        }
+      }
+      if (affectsX && !affectsY) sy = 1
+      if (affectsY && !affectsX) sx = 1
+      const scaled = applyScaleStrokesInDoc(
+        rd.snapshotDoc,
+        rd.snapshotSelections,
+        originX,
+        originY,
+        sx,
+        sy,
+      )
+      commitLive(scaled)
+      return
+    }
+
+    if (penEditDragRef.current) {
+      const ped = penEditDragRef.current
+      const pt2 = toNormUnclamped(e.clientX, e.clientY)
+      if (!pt2 || !penEditSelection) return
+      const layer = documentRef.current.layers.find(
+        (l) => l.id === penEditSelection.layerId,
+      )
+      const stroke = layer?.strokes.find(
+        (s) => s.id === penEditSelection.strokeId,
+      )
+      if (!stroke?.penAnchors) return
+      const idx = ped.anchorIndex
+      const anchors = stroke.penAnchors.map((a) => ({ ...a }))
+      const a = anchors[idx]
+      if (!a) return
+      if (ped.type === 'anchor') {
+        const ddx = pt2[0] - ped.last[0]
+        const ddy = pt2[1] - ped.last[1]
+        a.x += ddx
+        a.y += ddy
+        if (a.inX != null) a.inX += ddx
+        if (a.inY != null) a.inY += ddy
+        if (a.outX != null) a.outX += ddx
+        if (a.outY != null) a.outY += ddy
+      } else if (ped.type === 'handle-in') {
+        a.inX = pt2[0]
+        a.inY = pt2[1]
+      } else {
+        a.outX = pt2[0]
+        a.outY = pt2[1]
+      }
+      ped.last = pt2
+      commitLive(
+        updateStrokeInDocFull(
+          documentRef.current,
+          penEditSelection.layerId,
+          penEditSelection.strokeId,
+          { penAnchors: anchors },
+        ),
+      )
+      return
+    }
+
+    const pt = toNorm(e.clientX, e.clientY)
 
     if (tool === 'move' && moveDragRef.current && pt) {
       const m = moveDragRef.current
@@ -1301,8 +2251,7 @@ export default function VectorBoardWorkspace({
         ddx,
         ddy,
       )
-      documentRef.current = moved
-      onDocumentChange(moved)
+      commitLive(moved)
       return
     }
 
@@ -1336,30 +2285,11 @@ export default function VectorBoardWorkspace({
       return
     }
 
-    if (tool === 'pen' && pt && canvas) {
-      const cur = draftRef.current
-      if (cur?.kind === 'pen-bezier' && e.altKey) {
-        const hit = hitTestPenBezier(cur, pt[0], pt[1])
-        if (hit?.type === 'anchor') {
-          setPenRemoveHintIndex(hit.anchorIndex)
-          setPenCloseHover(false)
-          canvas.style.cursor = CURSOR_PEN_REMOVE
-        } else {
-          setPenRemoveHintIndex(null)
-          setPenCloseHover(false)
-          canvas.style.cursor = CURSOR_PEN_ADD
-        }
-      } else if (cur?.kind === 'pen-bezier' && !e.altKey && cur.anchors.length >= 2) {
-        const hit = hitTestPenBezier(cur, pt[0], pt[1])
-        const ch = hit?.type === 'anchor' && hit.anchorIndex === 0
-        setPenCloseHover(ch)
-        setPenRemoveHintIndex(null)
-        canvas.style.cursor = CURSOR_PEN_ADD
-      } else {
-        setPenRemoveHintIndex(null)
-        setPenCloseHover(false)
-        canvas.style.cursor = CURSOR_PEN_ADD
-      }
+    if (
+      (tool === 'pen' || (tool === 'move' && penEditSelection)) &&
+      canvas
+    ) {
+      updatePenHoverCursor(e.clientX, e.clientY, pointerAltKey(e))
     } else if (tool !== 'pen') {
       setPenRemoveHintIndex(null)
       setPenCloseHover(false)
@@ -1432,32 +2362,55 @@ export default function VectorBoardWorkspace({
   }
 
   const onPointerUp = (e: React.PointerEvent) => {
-    if (tool === 'move' && moveDragRef.current) {
-      moveDragRef.current = null
-      const el = e.target as HTMLElement
+    const el = e.target as HTMLElement
+    const releaseCapture = () => {
       if (
         typeof el.hasPointerCapture === 'function' &&
         el.hasPointerCapture(e.pointerId)
       ) {
         el.releasePointerCapture(e.pointerId)
       }
+    }
+
+    if (panDragRef.current) {
+      panDragRef.current = null
+      releaseCapture()
       const c = canvasRef.current
-      if (c) c.style.cursor = 'grab'
+      if (c) c.style.cursor = spaceDownRef.current ? 'grab' : 'default'
+      return
+    }
+
+    if (resizeDragRef.current) {
+      resizeDragRef.current = null
+      releaseCapture()
+      commit(documentRef.current)
+      const c = canvasRef.current
+      if (c) c.style.cursor = tool === 'move' ? CURSOR_MOVE : 'default'
+      return
+    }
+
+    if (penEditDragRef.current) {
+      penEditDragRef.current = null
+      releaseCapture()
+      commit(documentRef.current)
+      return
+    }
+
+    if (tool === 'move' && moveDragRef.current) {
+      moveDragRef.current = null
+      releaseCapture()
+      commit(documentRef.current)
+      const c = canvasRef.current
+      if (c) c.style.cursor = CURSOR_MOVE
       return
     }
 
     if (tool === 'move' && marqueeRef.current) {
       marqueeRef.current = null
       setMarqueeRect(null)
-      const el = e.target as HTMLElement
-      if (
-        typeof el.hasPointerCapture === 'function' &&
-        el.hasPointerCapture(e.pointerId)
-      ) {
-        el.releasePointerCapture(e.pointerId)
-      }
+      releaseCapture()
       const c = canvasRef.current
-      if (c) c.style.cursor = 'grab'
+      if (c) c.style.cursor = CURSOR_MOVE
       return
     }
 
@@ -1544,7 +2497,7 @@ export default function VectorBoardWorkspace({
     const active = getActiveLayer(document)
     if (!active) return
     setDocSelection((prev) => prev.filter((s) => s.layerId !== active.id))
-    onDocumentChange({
+    commit({
       ...document,
       layers: document.layers.map((L) =>
         L.id !== active.id ? L : { ...L, strokes: [] },
@@ -1554,13 +2507,13 @@ export default function VectorBoardWorkspace({
 
   const clearAll = () => {
     setDocSelection([])
-    onDocumentChange(emptyVectorBoardDocument())
+    commit(emptyVectorBoardDocument())
   }
 
   const addLayer = () => {
     const n = document.layers.length + 1
     const L = createVectorBoardLayer(`Layer ${n}`)
-    onDocumentChange({
+    commit({
       ...document,
       layers: [...document.layers, L],
       activeLayerId: L.id,
@@ -1572,7 +2525,7 @@ export default function VectorBoardWorkspace({
     const next = document.layers.filter((l) => l.id !== id)
     let activeLayerId = document.activeLayerId
     if (activeLayerId === id) activeLayerId = next[0]!.id
-    onDocumentChange({ ...document, layers: next, activeLayerId })
+    commit({ ...document, layers: next, activeLayerId })
   }
 
   const moveLayer = (id: string, dir: -1 | 1) => {
@@ -1584,11 +2537,11 @@ export default function VectorBoardWorkspace({
     const t = copy[i]!
     copy[i] = copy[j]!
     copy[j] = t
-    onDocumentChange({ ...document, layers: copy })
+    commit({ ...document, layers: copy })
   }
 
   const setLayerVisible = (id: string, visible: boolean) => {
-    onDocumentChange({
+    commit({
       ...document,
       layers: document.layers.map((L) =>
         L.id !== id ? L : { ...L, visible },
@@ -1662,7 +2615,7 @@ export default function VectorBoardWorkspace({
                       type="button"
                       className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-800"
                       onClick={() =>
-                        onDocumentChange({
+                        commit({
                           ...document,
                           activeLayerId: L.id,
                         })
@@ -1748,7 +2701,7 @@ export default function VectorBoardWorkspace({
                   <div className="flex flex-wrap items-center gap-0.5 py-1 pl-1 pr-2">
                     {(
                       [
-                        ['move', 'Move', Cursor02Icon],
+                        ['move', 'Move', Cursor01Icon],
                         ['pencil', 'Pencil', Pen01Icon],
                         ['pen', 'Pen', PenTool03Icon],
                         ['rect', 'Rectangle', SquareIcon],
@@ -1795,7 +2748,7 @@ export default function VectorBoardWorkspace({
                               { strokeWidthN: px / m },
                             )
                           }
-                          onDocumentChange(next)
+                          commit(next)
                         }
                       }}
                       onStrokePaintChange={(v) => {
@@ -1811,7 +2764,7 @@ export default function VectorBoardWorkspace({
                               { stroke: hex },
                             )
                           }
-                          onDocumentChange(next)
+                          commit(next)
                         }
                       }}
                     />
@@ -1836,7 +2789,7 @@ export default function VectorBoardWorkspace({
                                   { fill },
                                 )
                               }
-                              onDocumentChange(next)
+                              commit(next)
                             }
                           }}
                           title="Fill color"
@@ -1944,17 +2897,84 @@ export default function VectorBoardWorkspace({
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
+              onDoubleClick={(e) => {
+                if (tool !== 'move') return
+                const p = toNorm(e.clientX, e.clientY)
+                if (!p) return
+                const hit = findTopStrokeAt(document, p[0], p[1])
+                if (
+                  hit &&
+                  hit.stroke.kind === 'pen' &&
+                  hit.stroke.penAnchors &&
+                  hit.stroke.penAnchors.length > 0
+                ) {
+                  setPenEditSelection({
+                    layerId: hit.layerId,
+                    strokeId: hit.stroke.id,
+                  })
+                  setDocSelection([
+                    { layerId: hit.layerId, strokeId: hit.stroke.id },
+                  ])
+                  requestAnimationFrame(() => {
+                    const last = lastCanvasPointerClientRef.current
+                    if (last) {
+                      updatePenHoverCursor(
+                        last.x,
+                        last.y,
+                        altKeyHeldRef.current,
+                      )
+                    }
+                  })
+                }
+              }}
               onPointerLeave={() => {
                 setPenRemoveHintIndex(null)
                 setPenCloseHover(false)
                 const c = canvasRef.current
                 if (c) {
                   if (tool === 'pen') c.style.cursor = CURSOR_PEN_ADD
-                  else if (tool === 'move') c.style.cursor = 'grab'
+                  else if (tool === 'move') c.style.cursor = CURSOR_MOVE
                   else c.style.cursor = 'crosshair'
                 }
               }}
             />
+            <div className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-1 rounded-md border border-black/[0.08] bg-white/90 px-2 py-1 text-[11px] font-medium text-neutral-600 shadow-sm backdrop-blur-sm">
+              {Math.round(viewScale * 100)}%
+            </div>
+            <div className="pointer-events-auto absolute bottom-3 left-3 flex items-center gap-1 rounded-md border border-black/[0.08] bg-white/90 px-1 py-1 text-[11px] text-neutral-600 shadow-sm backdrop-blur-sm">
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-black/[0.06]"
+                title="Zoom out"
+                onClick={() => zoomAtCenter(1 / 1.2)}
+              >
+                −
+              </button>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-black/[0.06]"
+                title="Reset zoom"
+                onClick={resetView}
+              >
+                1:1
+              </button>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-black/[0.06]"
+                title="Fit to content"
+                onClick={fitView}
+              >
+                Fit
+              </button>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-black/[0.06]"
+                title="Zoom in"
+                onClick={() => zoomAtCenter(1.2)}
+              >
+                +
+              </button>
+            </div>
           </div>
         </div>
       </div>
