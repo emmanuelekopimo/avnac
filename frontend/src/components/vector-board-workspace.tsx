@@ -35,6 +35,8 @@ import {
   applySmoothPlacementHandles,
   ctrlInAbs,
   ctrlOutAbs,
+  findNearestPointOnPenPath,
+  splitPenBezierSegment,
   type VectorPenAnchor,
 } from '../lib/avnac-vector-pen-bezier'
 import {
@@ -879,6 +881,7 @@ function paintPenEditOverlay(
   w: number,
   h: number,
   viewScale: number,
+  addHint: { x: number; y: number } | null,
 ) {
   if (!sel) return
   const layer = doc.layers.find((l) => l.id === sel.layerId)
@@ -944,6 +947,18 @@ function paintPenEditOverlay(
     ctx.lineWidth = 1 / viewScale
     ctx.fillRect(a.x * w - half, a.y * h - half, sz, sz)
     ctx.strokeRect(a.x * w - half, a.y * h - half, sz, sz)
+  }
+  if (addHint) {
+    const hx = addHint.x * w
+    const hy = addHint.y * h
+    const hr = 4 / viewScale
+    ctx.beginPath()
+    ctx.arc(hx, hy, hr, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.fill()
+    ctx.lineWidth = 1.25 / viewScale
+    ctx.strokeStyle = '#2563eb'
+    ctx.stroke()
   }
   ctx.restore()
 }
@@ -1032,6 +1047,14 @@ export default function VectorBoardWorkspace({
     useState<DocStrokeSelection | null>(null)
   const penEditSelectionRef = useRef<DocStrokeSelection | null>(null)
   penEditSelectionRef.current = penEditSelection
+  const [penEditAddHint, setPenEditAddHint] = useState<{
+    x: number
+    y: number
+    segmentIndex: number
+    t: number
+  } | null>(null)
+  const penEditAddHintRef = useRef<typeof penEditAddHint>(null)
+  penEditAddHintRef.current = penEditAddHint
 
   const penEditDragRef = useRef<{
     type: 'anchor' | 'handle-in' | 'handle-out'
@@ -1118,7 +1141,15 @@ export default function VectorBoardWorkspace({
       const selBounds = normBoundsForSelections(document, docSelection)
       paintTransformHandles(ctx, selBounds, w, h, viewScale)
     }
-    paintPenEditOverlay(ctx, document, penEditSelection, w, h, viewScale)
+    paintPenEditOverlay(
+      ctx,
+      document,
+      penEditSelection,
+      w,
+      h,
+      viewScale,
+      penEditAddHint,
+    )
     ctx.restore()
   }, [
     document,
@@ -1133,6 +1164,7 @@ export default function VectorBoardWorkspace({
     viewTx,
     viewTy,
     penEditSelection,
+    penEditAddHint,
   ])
 
   useLayoutEffect(() => {
@@ -1179,6 +1211,10 @@ export default function VectorBoardWorkspace({
       setPenEditSelection(null)
     }
   }, [tool])
+
+  useEffect(() => {
+    if (!penEditSelection) setPenEditAddHint(null)
+  }, [penEditSelection])
 
   useEffect(() => {
     const m = moveDragRef.current
@@ -1250,32 +1286,103 @@ export default function VectorBoardWorkspace({
 
       const penEdit = penEditSelectionRef.current
       if (tool === 'move' && penEdit) {
-        if (penEditDragRef.current) return
+        if (penEditDragRef.current) {
+          setPenEditAddHint(null)
+          return
+        }
         const r = canvas.getBoundingClientRect()
         const w = Math.max(1, r.width)
         const h = Math.max(1, r.height)
         const ptu = toNormUnclamped(clientX, clientY)
-        if (!ptu) return
+        if (!ptu) {
+          setPenEditAddHint(null)
+          return
+        }
         const layer = documentRef.current.layers.find(
           (l) => l.id === penEdit.layerId,
         )
         const stroke = layer?.strokes.find((s) => s.id === penEdit.strokeId)
-        if (stroke?.kind === 'pen' && stroke.penAnchors && altHeld) {
-          const hitR = 8 / (viewRef.current.scale * Math.min(w, h))
-          const hitR2 = hitR * hitR
-          for (let i = stroke.penAnchors.length - 1; i >= 0; i--) {
-            const a = stroke.penAnchors[i]!
+        if (stroke?.kind !== 'pen' || !stroke.penAnchors) {
+          setPenEditAddHint(null)
+          canvas.style.cursor = CURSOR_MOVE
+          return
+        }
+        const anchors = stroke.penAnchors
+        const vs = viewRef.current.scale
+        const hitRpx = 8
+        const hitR = hitRpx / (vs * Math.min(w, h))
+        const hitR2 = hitR * hitR
+        if (altHeld) {
+          for (let i = anchors.length - 1; i >= 0; i--) {
+            const a = anchors[i]!
             const dx = ptu[0] - a.x
             const dy = ptu[1] - a.y
             if (dx * dx + dy * dy <= hitR2) {
+              setPenEditAddHint(null)
               canvas.style.cursor = CURSOR_PEN_REMOVE
               return
             }
           }
+          setPenEditAddHint(null)
+          canvas.style.cursor = CURSOR_MOVE
+          return
         }
+        // Prefer move cursor when directly over an anchor or control handle.
+        for (let i = anchors.length - 1; i >= 0; i--) {
+          const a = anchors[i]!
+          const dxA = ptu[0] - a.x
+          const dyA = ptu[1] - a.y
+          if (dxA * dxA + dyA * dyA <= hitR2) {
+            setPenEditAddHint(null)
+            canvas.style.cursor = CURSOR_MOVE
+            return
+          }
+          if (a.outX != null && a.outY != null) {
+            const dxO = ptu[0] - a.outX
+            const dyO = ptu[1] - a.outY
+            if (dxO * dxO + dyO * dyO <= hitR2) {
+              setPenEditAddHint(null)
+              canvas.style.cursor = CURSOR_MOVE
+              return
+            }
+          }
+          if (a.inX != null && a.inY != null) {
+            const dxI = ptu[0] - a.inX
+            const dyI = ptu[1] - a.inY
+            if (dxI * dxI + dyI * dyI <= hitR2) {
+              setPenEditAddHint(null)
+              canvas.style.cursor = CURSOR_MOVE
+              return
+            }
+          }
+        }
+        // Near the curve: show add cursor + preview dot at insertion point.
+        if (anchors.length >= 2) {
+          const near = findNearestPointOnPenPath(
+            anchors,
+            stroke.penClosed === true,
+            ptu[0],
+            ptu[1],
+            w * vs,
+            h * vs,
+          )
+          const THRESH_PX = 6
+          if (near && near.dist <= THRESH_PX) {
+            setPenEditAddHint({
+              x: near.x,
+              y: near.y,
+              segmentIndex: near.segmentIndex,
+              t: near.t,
+            })
+            canvas.style.cursor = CURSOR_PEN_ADD
+            return
+          }
+        }
+        setPenEditAddHint(null)
         canvas.style.cursor = CURSOR_MOVE
         return
       }
+      setPenEditAddHint(null)
 
       if (tool !== 'pen') return
 
@@ -1521,6 +1628,8 @@ export default function VectorBoardWorkspace({
             : { ...L, strokes: [...L.strokes, stroke] },
         ),
       })
+      setDocSelection([{ layerId: active.id, strokeId: stroke.id }])
+      setPenEditSelection(null)
     },
     [document, commit],
   )
@@ -1671,6 +1780,22 @@ export default function VectorBoardWorkspace({
         setDocSelection([])
         setPenEditSelection(null)
         return
+      }
+
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+        const k = e.key.toLowerCase()
+        let nextTool: DrawTool | null = null
+        if (k === 'v' && !e.shiftKey) nextTool = 'move'
+        else if (k === 'p' && e.shiftKey) nextTool = 'pencil'
+        else if (k === 'p' && !e.shiftKey) nextTool = 'pen'
+        else if (k === 'r' && !e.shiftKey) nextTool = 'rect'
+        else if (k === 'o' && !e.shiftKey) nextTool = 'ellipse'
+        if (nextTool) {
+          e.preventDefault()
+          e.stopPropagation()
+          setTool(nextTool)
+          return
+        }
       }
 
       if (
@@ -1893,6 +2018,44 @@ export default function VectorBoardWorkspace({
               }
               ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
               return
+            }
+          }
+          if (!pointerAltKey(e) && stroke.penAnchors.length >= 2) {
+            const near = findNearestPointOnPenPath(
+              stroke.penAnchors,
+              stroke.penClosed === true,
+              pt[0],
+              pt[1],
+              r.width * viewRef.current.scale,
+              r.height * viewRef.current.scale,
+            )
+            if (near && near.dist <= 6) {
+              const nextAnchors = splitPenBezierSegment(
+                stroke.penAnchors,
+                near.segmentIndex,
+                near.t,
+                stroke.penClosed === true,
+              )
+              if (nextAnchors) {
+                commit(
+                  updateStrokeInDocFull(
+                    documentRef.current,
+                    penEditSelection.layerId,
+                    penEditSelection.strokeId,
+                    { penAnchors: nextAnchors },
+                  ),
+                )
+                const newAnchorIndex = near.segmentIndex + 1
+                penEditDragRef.current = {
+                  type: 'anchor',
+                  anchorIndex: newAnchorIndex,
+                  pointerId: e.pointerId,
+                  last: [near.x, near.y],
+                }
+                ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+                setPenEditAddHint(null)
+                return
+              }
             }
           }
         }
@@ -2479,14 +2642,30 @@ export default function VectorBoardWorkspace({
     }
 
     const sh = d
-    const b = sh.b ?? sh.a
-    if (sh.a[0] === b[0] && sh.a[1] === b[1]) return
+    const canvas = canvasRef.current
+    const r = canvas?.getBoundingClientRect()
+    const w = r ? Math.max(1, r.width) : 1
+    const h = r ? Math.max(1, r.height) : 1
+    const vs = Math.max(0.0001, viewRef.current.scale)
+    const b0 = sh.b ?? sh.a
+    const dxPx = (b0[0] - sh.a[0]) * w * vs
+    const dyPx = (b0[1] - sh.a[1]) * h * vs
+    const MIN_DRAG_PX = 3
+    const DEFAULT_SIZE_PX = 100
+    let a = sh.a
+    let b = b0
+    if (Math.abs(dxPx) < MIN_DRAG_PX && Math.abs(dyPx) < MIN_DRAG_PX) {
+      const halfW = DEFAULT_SIZE_PX / 2 / (w * vs)
+      const halfH = DEFAULT_SIZE_PX / 2 / (h * vs)
+      a = [sh.a[0] - halfW, sh.a[1] - halfH]
+      b = [sh.a[0] + halfW, sh.a[1] + halfH]
+    }
 
     const kind: VectorStrokeKind = sh.tool
     commitStrokeToActiveLayer({
       id: crypto.randomUUID(),
       kind,
-      points: [sh.a, b],
+      points: [a, b],
       stroke: '',
       strokeWidthN: 0,
       fill,
@@ -2701,19 +2880,20 @@ export default function VectorBoardWorkspace({
                   <div className="flex flex-wrap items-center gap-0.5 py-1 pl-1 pr-2">
                     {(
                       [
-                        ['move', 'Move', Cursor01Icon],
-                        ['pencil', 'Pencil', Pen01Icon],
-                        ['pen', 'Pen', PenTool03Icon],
-                        ['rect', 'Rectangle', SquareIcon],
-                        ['ellipse', 'Ellipse', CircleIcon],
+                        ['move', 'Move', 'V', Cursor01Icon],
+                        ['pencil', 'Pencil', 'Shift+P', Pen01Icon],
+                        ['pen', 'Pen', 'P', PenTool03Icon],
+                        ['rect', 'Rectangle', 'R', SquareIcon],
+                        ['ellipse', 'Ellipse', 'O', CircleIcon],
                       ] as const
-                    ).map(([id, label, icon]) => (
+                    ).map(([id, label, shortcut, icon]) => (
                       <button
                         key={id}
                         type="button"
                         className={floatingToolbarIconButton(tool === id)}
-                        title={label}
-                        aria-label={label}
+                        title={`${label} (${shortcut})`}
+                        aria-label={`${label} (${shortcut})`}
+                        aria-keyshortcuts={shortcut}
                         aria-pressed={tool === id}
                         onClick={() => setTool(id)}
                       >
