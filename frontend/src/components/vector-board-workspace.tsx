@@ -549,6 +549,18 @@ function paintDocument(
   }
 }
 
+/** Thumbnail / list preview: light background + document strokes (no grid). */
+export function renderVectorBoardDocumentPreview(
+  ctx: CanvasRenderingContext2D,
+  doc: VectorBoardDocument,
+  w: number,
+  h: number,
+) {
+  ctx.fillStyle = '#f8f8f7'
+  ctx.fillRect(0, 0, w, h)
+  paintDocument(ctx, doc, w, h)
+}
+
 function paintDraft(
   ctx: CanvasRenderingContext2D,
   draft: DraftState | null,
@@ -725,7 +737,8 @@ type Props = {
   boardName: string
   document: VectorBoardDocument
   onDocumentChange: (doc: VectorBoardDocument) => void
-  onRequestPlaceOnCanvas: () => void
+  onSave: () => void
+  onSaveAndPlace: () => void
   onClose: () => void
 }
 
@@ -734,7 +747,8 @@ export default function VectorBoardWorkspace({
   boardName,
   document,
   onDocumentChange,
-  onRequestPlaceOnCanvas,
+  onSave,
+  onSaveAndPlace,
   onClose,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -758,6 +772,8 @@ export default function VectorBoardWorkspace({
     last: [number, number]
     pointerId: number
   } | null>(null)
+  const [saveSplitOpen, setSaveSplitOpen] = useState(false)
+  const saveSplitRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef(document)
   documentRef.current = document
 
@@ -872,6 +888,20 @@ export default function VectorBoardWorkspace({
       else c.style.cursor = 'crosshair'
     }
   }, [tool])
+
+  useEffect(() => {
+    if (!open) setSaveSplitOpen(false)
+  }, [open])
+
+  useEffect(() => {
+    if (!saveSplitOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (saveSplitRef.current?.contains(e.target as Node)) return
+      setSaveSplitOpen(false)
+    }
+    window.document.addEventListener('mousedown', onDown)
+    return () => window.document.removeEventListener('mousedown', onDown)
+  }, [saveSplitOpen])
 
   const toNorm = useCallback(
     (clientX: number, clientY: number): [number, number] | null => {
@@ -1658,19 +1688,59 @@ export default function VectorBoardWorkspace({
                       Clear all
                     </button>
                     <FloatingToolbarDivider />
-                    <button
-                      type="button"
-                      disabled={!canPlace}
-                      className={[
-                        'flex h-8 shrink-0 items-center justify-center rounded-lg px-3 text-[13px] font-semibold outline-none transition-colors',
-                        canPlace
-                          ? 'bg-neutral-900 text-white hover:bg-neutral-800'
-                          : 'cursor-not-allowed bg-neutral-200/90 text-neutral-500',
-                      ].join(' ')}
-                      onClick={onRequestPlaceOnCanvas}
-                    >
-                      Place on canvas
-                    </button>
+                    <div ref={saveSplitRef} className="relative shrink-0">
+                      <div className="flex h-8 overflow-hidden rounded-lg">
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center justify-center bg-neutral-900 px-3 text-[13px] font-semibold text-white outline-none transition-colors hover:bg-neutral-800"
+                          onClick={() => {
+                            setSaveSplitOpen(false)
+                            onSave()
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="flex w-8 shrink-0 items-center justify-center border-l border-white/20 bg-neutral-900 text-white outline-none transition-colors hover:bg-neutral-800"
+                          aria-expanded={saveSplitOpen}
+                          aria-haspopup="menu"
+                          title="More save options"
+                          onClick={() => setSaveSplitOpen((o) => !o)}
+                        >
+                          <HugeiconsIcon
+                            icon={ArrowDown01Icon}
+                            size={16}
+                            strokeWidth={1.75}
+                          />
+                        </button>
+                      </div>
+                      {saveSplitOpen ? (
+                        <div
+                          className="absolute right-0 top-full z-[80] mt-1 min-w-[14rem] rounded-xl border border-black/[0.08] bg-white py-1 shadow-[0_12px_40px_rgba(0,0,0,0.12)]"
+                          role="menu"
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={!canPlace}
+                            className={[
+                              'flex w-full px-3 py-2 text-left text-[13px] font-medium transition-colors',
+                              canPlace
+                                ? 'text-neutral-800 hover:bg-black/[0.05]'
+                                : 'cursor-not-allowed text-neutral-400',
+                            ].join(' ')}
+                            onClick={() => {
+                              if (!canPlace) return
+                              setSaveSplitOpen(false)
+                              onSaveAndPlace()
+                            }}
+                          >
+                            Save and place on canvas
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </FloatingToolbarShell>
               </div>
