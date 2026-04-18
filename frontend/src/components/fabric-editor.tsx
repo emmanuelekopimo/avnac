@@ -1057,6 +1057,77 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     syncSelectionStroke,
   ])
 
+  const addImageFromFiles = useCallback(
+    (
+      files: FileList | readonly File[] | null,
+      atPoint?: { x: number; y: number },
+    ) => {
+      const canvas = fabricCanvasRef.current
+      const mod = fabricModRef.current
+      if (!canvas || !mod?.FabricImage) return
+      const list = files
+        ? Array.from(files).filter((f) => f.type.startsWith('image/'))
+        : []
+      if (list.length === 0) return
+      const toProcess = atPoint ? list : list.slice(0, 1)
+      const aw = artboardW
+      const ah = artboardH
+      const baseX = atPoint?.x ?? aw / 2
+      const baseY = atPoint?.y ?? ah / 2
+      const stagger = 12
+      let remaining = toProcess.length
+      const bumpDone = () => {
+        remaining -= 1
+        if (remaining === 0) syncSelection()
+      }
+      for (let i = 0; i < toProcess.length; i++) {
+        const f = toProcess[i]!
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = reader.result
+          if (typeof dataUrl !== 'string') {
+            bumpDone()
+            return
+          }
+          void mod.FabricImage.fromURL(dataUrl, {
+            crossOrigin: 'anonymous',
+          })
+            .then((img) => {
+              const dx = atPoint && toProcess.length > 1 ? i * stagger : 0
+              const dy = atPoint && toProcess.length > 1 ? i * stagger : 0
+              img.set({
+                left: baseX + dx,
+                top: baseY + dy,
+                originX: 'center',
+                originY: 'center',
+              })
+              const maxW = aw * 0.6
+              const maxH = ah * 0.6
+              const iw = img.width || 1
+              const ih = img.height || 1
+              if (iw > maxW || ih > maxH) {
+                const sc = Math.min(maxW / iw, maxH / ih)
+                img.scale(sc)
+              }
+              ensureAvnacLayerId(img)
+              canvas.add(img)
+              canvas.setActiveObject(img)
+              canvas.requestRenderAll()
+              bumpDone()
+            })
+            .catch(() => {
+              bumpDone()
+            })
+        }
+        reader.onerror = () => {
+          bumpDone()
+        }
+        reader.readAsDataURL(f)
+      }
+    },
+    [artboardW, artboardH, syncSelection],
+  )
+
   const syncFillFromSelection = useCallback(() => {
     const canvas = fabricCanvasRef.current
     const mod = fabricModRef.current
@@ -2733,18 +2804,26 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     e.dataTransfer.dropEffect = 'copy'
   }, [])
 
-  const onVectorBoardDrop = useCallback(
+  const onViewportDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault()
-      const boardId = e.dataTransfer.getData(AVNAC_VECTOR_BOARD_DRAG_MIME)
-      if (!boardId) return
       const canvas = fabricCanvasRef.current
       const mod = fabricModRef.current
       if (!canvas || !mod) return
+      const boardId = e.dataTransfer.getData(AVNAC_VECTOR_BOARD_DRAG_MIME)
+      if (boardId) {
+        const p = canvas.getScenePoint(e.nativeEvent)
+        placeVectorBoardOnCanvas(boardId, p.x, p.y)
+        return
+      }
+      const imageFiles = Array.from(e.dataTransfer.files).filter((f) =>
+        f.type.startsWith('image/'),
+      )
+      if (imageFiles.length === 0) return
       const p = canvas.getScenePoint(e.nativeEvent)
-      placeVectorBoardOnCanvas(boardId, p.x, p.y)
+      addImageFromFiles(imageFiles, { x: p.x, y: p.y })
     },
-    [placeVectorBoardOnCanvas],
+    [addImageFromFiles, placeVectorBoardOnCanvas],
   )
 
   const openVectorBoardWorkspace = useCallback((id: string) => {
@@ -3595,43 +3674,6 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
     [persistAfterMutation],
   )
 
-  function addImageFromFiles(files: FileList | null) {
-    const f = files?.[0]
-    if (!f || !f.type.startsWith('image/')) return
-    const canvas = fabricCanvasRef.current
-    const mod = fabricModRef.current
-    if (!canvas || !mod?.FabricImage) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result
-      if (typeof dataUrl !== 'string') return
-      void mod.FabricImage.fromURL(dataUrl, { crossOrigin: 'anonymous' }).then(
-        (img) => {
-          img.set({
-            left: artboardW / 2,
-            top: artboardH / 2,
-            originX: 'center',
-            originY: 'center',
-          })
-          const maxW = artboardW * 0.6
-          const maxH = artboardH * 0.6
-          const iw = img.width || 1
-          const ih = img.height || 1
-          if (iw > maxW || ih > maxH) {
-            const sc = Math.min(maxW / iw, maxH / ih)
-            img.scale(sc)
-          }
-          ensureAvnacLayerId(img)
-          canvas.add(img)
-          canvas.setActiveObject(img)
-          canvas.requestRenderAll()
-          syncSelection()
-        },
-      )
-    }
-    reader.readAsDataURL(f)
-  }
-
   let elementToolbarLockedDisplay = false
   let elementToolbarCanGroup = false
   let elementToolbarCanAlignElements = false
@@ -3854,7 +3896,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
         ref={viewportRef}
         className="relative flex min-h-0 flex-1 flex-col overflow-auto rounded-2xl bg-[var(--surface-subtle)]"
         onDragOver={ready ? onVectorBoardDragOver : undefined}
-        onDrop={ready ? onVectorBoardDrop : undefined}
+        onDrop={ready ? onViewportDrop : undefined}
       >
         <div className="flex min-h-min w-full flex-1 flex-col items-center justify-center px-4 pb-4 pt-0 sm:px-6 sm:pb-6 sm:pt-1">
           <div
