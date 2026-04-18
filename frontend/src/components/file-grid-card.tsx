@@ -93,6 +93,14 @@ export default function FileGridCard({
       ? `${menuBtnClass} opacity-100 pointer-events-auto`
       : menuBtnClass
 
+  const checkboxWrapClass =
+    'inline-flex cursor-pointer opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto'
+
+  const checkboxWrapVisible =
+    menuOpen || selected
+      ? `${checkboxWrapClass} opacity-100 pointer-events-auto`
+      : checkboxWrapClass
+
   const menuItemClass =
     'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-[var(--text)] transition-colors hover:bg-black/[0.04]'
 
@@ -107,7 +115,7 @@ export default function FileGridCard({
       >
         <div className="relative p-2.5 sm:p-3">
           <div className="absolute left-3 top-3 z-20">
-            <label className="inline-flex cursor-pointer">
+            <label className={checkboxWrapVisible}>
               <input
                 type="checkbox"
                 className="peer sr-only"
