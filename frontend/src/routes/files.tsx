@@ -1,11 +1,16 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
-import FileGridPreview from '../components/file-grid-preview'
+import { createFileRoute } from '@tanstack/react-router'
+import { useCallback, useEffect, useState } from 'react'
+import DeleteConfirmDialog from '../components/delete-confirm-dialog'
+import FileGridCard from '../components/file-grid-card'
+import FilesMultiselectBar from '../components/files-multiselect-bar'
 import NewCanvasDialog from '../components/new-canvas-dialog'
+import { avnacDocumentPreviewEvictPersistId } from '../lib/avnac-document-preview'
 import {
+  idbDeleteDocument,
   idbListDocuments,
   type AvnacEditorIdbListItem,
 } from '../lib/avnac-editor-idb'
+import { downloadAvnacJsonForId } from '../lib/avnac-files-export'
 
 export const Route = createFileRoute('/files')({
   component: FilesPage,
@@ -26,23 +31,120 @@ function FilesPage() {
   const [items, setItems] = useState<AvnacEditorIdbListItem[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [newCanvasOpen, setNewCanvasOpen] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [deleteDialog, setDeleteDialog] = useState<{
+    ids: string[]
+    title: string
+    message: string
+  } | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  const clearSelection = useCallback(() => setSelectedIds([]), [])
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }, [])
+
+  const refreshList = useCallback(() => {
     void idbListDocuments()
       .then((list) => {
-        if (!cancelled) setItems(list)
+        setItems(list)
+        setLoadError(null)
       })
       .catch(() => {
-        if (!cancelled) {
-          setLoadError('Could not load files.')
-          setItems([])
-        }
+        setLoadError('Could not load files.')
+        setItems([])
       })
-    return () => {
-      cancelled = true
-    }
   }, [])
+
+  useEffect(() => {
+    refreshList()
+  }, [refreshList])
+
+  useEffect(() => {
+    if (!items) return
+    if (items.length === 0) {
+      setSelectedIds((prev) => (prev.length ? [] : prev))
+      return
+    }
+    const valid = new Set(items.map((i) => i.id))
+    setSelectedIds((prev) => {
+      const next = prev.filter((id) => valid.has(id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [items])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (deleteDialog) {
+        e.preventDefault()
+        setDeleteDialog(null)
+        return
+      }
+      if (selectedIds.length > 0) clearSelection()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [deleteDialog, selectedIds.length, clearSelection])
+
+  const bulkDownload = useCallback(() => {
+    const ids = [...selectedIds]
+    void (async () => {
+      try {
+        for (const id of ids) {
+          await downloadAvnacJsonForId(id)
+          await new Promise((r) => setTimeout(r, 140))
+        }
+      } catch (err) {
+        console.error('[avnac] bulk download failed', err)
+      }
+    })()
+  }, [selectedIds])
+
+  const bulkTrash = useCallback(() => {
+    const ids = [...selectedIds]
+    if (ids.length === 0) return
+    const n = ids.length
+    setDeleteDialog({
+      ids,
+      title: n === 1 ? 'Remove this file?' : 'Remove these files?',
+      message:
+        n === 1
+          ? 'This will permanently remove the file from this browser. This cannot be undone.'
+          : `This will permanently remove ${n} files from this browser. This cannot be undone.`,
+    })
+  }, [selectedIds])
+
+  const confirmDelete = useCallback(() => {
+    if (!deleteDialog) return
+    const ids = [...deleteDialog.ids]
+    setDeleteDialog(null)
+    void (async () => {
+      try {
+        for (const id of ids) {
+          await idbDeleteDocument(id)
+          avnacDocumentPreviewEvictPersistId(id)
+        }
+        setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)))
+        refreshList()
+      } catch (err) {
+        console.error('[avnac] delete failed', err)
+      }
+    })()
+  }, [deleteDialog, refreshList])
+
+  const requestDeleteFile = useCallback((id: string) => {
+    setDeleteDialog({
+      ids: [id],
+      title: 'Remove this file?',
+      message:
+        'This will permanently remove the file from this browser. This cannot be undone.',
+    })
+  }, [])
+
+  const selectionCount = selectedIds.length
 
   return (
     <main className="hero-page relative flex min-h-[100dvh] flex-col overflow-hidden">
@@ -63,7 +165,9 @@ function FilesPage() {
           </div>
         </header>
 
-        <div className="mx-auto w-full max-w-6xl flex-1 px-5 py-12 sm:px-8 sm:py-16 lg:py-20">
+        <div
+          className={`mx-auto w-full max-w-6xl flex-1 px-5 py-12 sm:px-8 sm:py-16 lg:py-20 ${selectionCount > 0 ? 'pb-28 sm:pb-32' : ''}`}
+        >
           <div className="rise-in">
             <h1 className="display-title mb-4 text-[clamp(2rem,5vw,3.25rem)] font-medium leading-[1.06] tracking-[-0.03em] text-[var(--text)]">
               Files
@@ -94,37 +198,15 @@ function FilesPage() {
             ) : (
               <ul className="m-0 grid list-none grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 sm:gap-7">
                 {items.map((row) => (
-                  <li key={row.id} className="min-w-0">
-                    <Link
-                      to="/create"
-                      search={{ id: row.id }}
-                      className="group flex h-full flex-col rounded-2xl border border-[var(--line)] bg-white/50 no-underline backdrop-blur-md transition-[border-color,background-color] duration-200 hover:border-black/[0.14] hover:bg-white/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--text)]"
-                    >
-                      <div className="p-2.5 sm:p-3">
-                        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-[var(--surface-subtle)] ring-1 ring-inset ring-black/[0.06]">
-                          <FileGridPreview
-                            persistId={row.id}
-                            updatedAt={row.updatedAt}
-                            className="absolute inset-0"
-                          />
-                        </div>
-                      </div>
-                      <div className="flex min-h-0 flex-1 flex-col gap-2 border-t border-black/[0.05] px-4 pb-4 pt-3">
-                        <div className="truncate text-[15px] font-medium leading-snug tracking-[-0.01em] text-[var(--text)]">
-                          {row.name}
-                        </div>
-                        <div className="text-[13px] leading-normal tabular-nums text-[var(--text-muted)]">
-                          {row.artboardWidth} × {row.artboardHeight}px
-                        </div>
-                        <time
-                          dateTime={new Date(row.updatedAt).toISOString()}
-                          className="mt-auto text-[12px] tabular-nums text-[var(--text-subtle)]"
-                        >
-                          {formatUpdatedAt(row.updatedAt)}
-                        </time>
-                      </div>
-                    </Link>
-                  </li>
+                  <FileGridCard
+                    key={row.id}
+                    row={row}
+                    formatUpdatedAt={formatUpdatedAt}
+                    onListChange={refreshList}
+                    selected={selectedIds.includes(row.id)}
+                    onToggleSelect={toggleSelect}
+                    onRequestDelete={requestDeleteFile}
+                  />
                 ))}
               </ul>
             )}
@@ -134,6 +216,19 @@ function FilesPage() {
       <NewCanvasDialog
         open={newCanvasOpen}
         onClose={() => setNewCanvasOpen(false)}
+      />
+      <FilesMultiselectBar
+        count={selectionCount}
+        onClear={clearSelection}
+        onDownload={bulkDownload}
+        onTrash={bulkTrash}
+      />
+      <DeleteConfirmDialog
+        open={deleteDialog !== null}
+        title={deleteDialog?.title ?? ''}
+        message={deleteDialog?.message ?? ''}
+        onClose={() => setDeleteDialog(null)}
+        onConfirm={confirmDelete}
       />
     </main>
   )
