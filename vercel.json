@@ -1,6 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "bunVersion": "1.x",
   "experimentalServices": {
     "frontend": {
       "entrypoint": "frontend",
@@ -11,7 +10,9 @@
     },
     "backend": {
       "entrypoint": "backend",
-      "routePrefix": "/api"
+      "routePrefix": "/api",
+      "runtime": "nodejs24.x",
+      "installCommand": "npm install"
     }
   }
 }

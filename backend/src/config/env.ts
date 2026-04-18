@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { getRuntimeEnv } from "./runtime-env";
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -11,6 +13,6 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
 });
 
-export const env = envSchema.parse(Bun.env);
+export const env = envSchema.parse(getRuntimeEnv());
 
 export type Env = typeof env;
