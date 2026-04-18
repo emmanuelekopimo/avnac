@@ -26,7 +26,7 @@ const exportTriggerClass = [
   'text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]',
   'outline-none transition-[background,box-shadow,filter] duration-200',
   'hover:from-[#f5f4f2] hover:via-[#eceaf1] hover:to-[#e5e0f2] hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)]',
-  'focus-visible:ring-2 focus-visible:ring-[#8B3DFF]/30 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]',
+  'focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]',
   'disabled:pointer-events-none disabled:opacity-40',
 ].join(' ')
 
@@ -125,7 +125,7 @@ export default function EditorExportMenu({ disabled, onExport }: Props) {
                 setOpts((p) => ({ ...p, transparent: e.target.checked }))
               }
               className="size-4 shrink-0 rounded border border-black/20"
-              style={{ accentColor: '#8B3DFF' }}
+              style={{ accentColor: 'var(--accent)' }}
             />
             Transparent background
           </label>
