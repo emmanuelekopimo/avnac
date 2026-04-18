@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
+import FileGridPreview from '../components/file-grid-preview'
 import {
   idbListDocuments,
   type AvnacEditorIdbListItem,
@@ -18,11 +19,6 @@ function formatUpdatedAt(ts: number): string {
   } catch {
     return new Date(ts).toLocaleString()
   }
-}
-
-function shortId(id: string): string {
-  if (id.length <= 12) return id
-  return `${id.slice(0, 8)}…${id.slice(-4)}`
 }
 
 function FilesPage() {
@@ -54,7 +50,7 @@ function FilesPage() {
 
       <div className="relative z-[1] flex flex-1 flex-col">
         <header className="px-5 pt-4 sm:px-8 sm:pt-5">
-          <div className="mx-auto flex max-w-3xl justify-end">
+          <div className="mx-auto flex max-w-6xl justify-end">
             <Link
               to="/create"
               className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-full bg-[var(--text)] px-6 py-2.5 text-[15px] font-medium text-white no-underline transition hover:bg-[#262626] sm:min-h-12 sm:px-8 sm:py-3 sm:text-[1.0625rem]"
@@ -64,7 +60,7 @@ function FilesPage() {
           </div>
         </header>
 
-        <div className="mx-auto w-full max-w-3xl flex-1 px-5 py-12 sm:px-8 sm:py-16 lg:py-20">
+        <div className="mx-auto w-full max-w-6xl flex-1 px-5 py-12 sm:px-8 sm:py-16 lg:py-20">
           <div className="rise-in">
             <h1 className="display-title mb-4 text-[clamp(2rem,5vw,3.25rem)] font-medium leading-[1.06] tracking-[-0.03em] text-[var(--text)]">
               Files
@@ -92,32 +88,37 @@ function FilesPage() {
                 </Link>
               </div>
             ) : (
-              <ul className="m-0 divide-y divide-black/[0.08] border-t border-black/[0.08] p-0">
+              <ul className="m-0 grid list-none grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 sm:gap-7">
                 {items.map((row) => (
-                  <li key={row.id} className="list-none">
+                  <li key={row.id} className="min-w-0">
                     <Link
                       to="/create"
                       search={{ id: row.id }}
-                      className="group -mx-3 flex flex-col gap-1 rounded-2xl px-3 py-5 no-underline transition-colors hover:bg-white/55 sm:-mx-4 sm:flex-row sm:items-baseline sm:justify-between sm:gap-8 sm:px-4 sm:py-6"
+                      className="group flex h-full flex-col rounded-2xl border border-[var(--line)] bg-white/50 no-underline backdrop-blur-md transition-[border-color,background-color] duration-200 hover:border-black/[0.14] hover:bg-white/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--text)]"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[17px] font-medium text-[var(--text)] transition group-hover:text-[var(--text)] sm:text-lg">
-                          {row.name}
-                        </div>
-                        <div className="mt-1 text-[15px] text-[var(--text-muted)]">
-                          {row.artboardWidth} × {row.artboardHeight}px
-                          <span className="text-[var(--text-subtle)]"> · </span>
-                          <span className="font-mono text-[13px] text-[var(--text-subtle)]">
-                            {shortId(row.id)}
-                          </span>
+                      <div className="p-2.5 sm:p-3">
+                        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-[var(--surface-subtle)] ring-1 ring-inset ring-black/[0.06]">
+                          <FileGridPreview
+                            persistId={row.id}
+                            updatedAt={row.updatedAt}
+                            className="absolute inset-0"
+                          />
                         </div>
                       </div>
-                      <time
-                        dateTime={new Date(row.updatedAt).toISOString()}
-                        className="shrink-0 text-[14px] tabular-nums text-[var(--text-subtle)] sm:text-right sm:text-[15px]"
-                      >
-                        {formatUpdatedAt(row.updatedAt)}
-                      </time>
+                      <div className="flex min-h-0 flex-1 flex-col gap-2 border-t border-black/[0.05] px-4 pb-4 pt-3">
+                        <div className="truncate text-[15px] font-medium leading-snug tracking-[-0.01em] text-[var(--text)]">
+                          {row.name}
+                        </div>
+                        <div className="text-[13px] leading-normal tabular-nums text-[var(--text-muted)]">
+                          {row.artboardWidth} × {row.artboardHeight}px
+                        </div>
+                        <time
+                          dateTime={new Date(row.updatedAt).toISOString()}
+                          className="mt-auto text-[12px] tabular-nums text-[var(--text-subtle)]"
+                        >
+                          {formatUpdatedAt(row.updatedAt)}
+                        </time>
+                      </div>
                     </Link>
                   </li>
                 ))}
