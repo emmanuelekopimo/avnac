@@ -135,6 +135,7 @@ import {
   renewAvnacLayerId,
   setAvnacLayerName,
 } from '../lib/ensure-avnac-layer-id'
+import { extractImageUrlFromDataTransfer } from '../lib/extract-image-url-from-data-transfer'
 import { linearGradientForBox } from '../lib/fabric-linear-gradient'
 import { loadCanvasGoogleFontsAndRelayout } from '../lib/avnac-canvas-google-fonts'
 import { loadGoogleFontFamily } from '../lib/load-google-font'
@@ -1124,6 +1125,54 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
           bumpDone()
         }
         reader.readAsDataURL(f)
+      }
+    },
+    [artboardW, artboardH, syncSelection],
+  )
+
+  const addImageFromRemoteUrl = useCallback(
+    async (url: string, atPoint: { x: number; y: number }) => {
+      const canvas = fabricCanvasRef.current
+      const mod = fabricModRef.current
+      if (!canvas || !mod?.FabricImage) return
+
+      const aw = artboardW
+      const ah = artboardH
+      const maxW = aw * 0.6
+      const maxH = ah * 0.6
+
+      const place = (img: FabricImage) => {
+        img.set({
+          left: atPoint.x,
+          top: atPoint.y,
+          originX: 'center',
+          originY: 'center',
+        })
+        const iw = img.width || 1
+        const ih = img.height || 1
+        if (iw > maxW || ih > maxH) {
+          const sc = Math.min(maxW / iw, maxH / ih)
+          img.scale(sc)
+        }
+        ensureAvnacLayerId(img)
+        canvas.add(img)
+        canvas.setActiveObject(img)
+        canvas.requestRenderAll()
+        syncSelection()
+      }
+
+      try {
+        const img = await mod.FabricImage.fromURL(url, {
+          crossOrigin: 'anonymous',
+        })
+        place(img)
+      } catch {
+        try {
+          const img = await mod.FabricImage.fromURL(url)
+          place(img)
+        } catch {
+          syncSelection()
+        }
       }
     },
     [artboardW, artboardH, syncSelection],
@@ -2820,11 +2869,17 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       const imageFiles = Array.from(e.dataTransfer.files).filter((f) =>
         f.type.startsWith('image/'),
       )
-      if (imageFiles.length === 0) return
       const p = canvas.getScenePoint(e.nativeEvent)
-      addImageFromFiles(imageFiles, { x: p.x, y: p.y })
+      if (imageFiles.length > 0) {
+        addImageFromFiles(imageFiles, { x: p.x, y: p.y })
+        return
+      }
+      const remoteUrl = extractImageUrlFromDataTransfer(e.dataTransfer)
+      if (remoteUrl) {
+        void addImageFromRemoteUrl(remoteUrl, { x: p.x, y: p.y })
+      }
     },
-    [addImageFromFiles, placeVectorBoardOnCanvas],
+    [addImageFromFiles, addImageFromRemoteUrl, placeVectorBoardOnCanvas],
   )
 
   const openVectorBoardWorkspace = useCallback((id: string) => {
