@@ -48,7 +48,7 @@ import {
   refreshAllVectorBoardInstances,
   syncVectorBoardInstancesToDoc,
 } from '../lib/avnac-vector-board-fabric'
-import { installSceneSnap, type SceneSnapGuide } from '../lib/fabric-scene-snap'
+import { installSceneSnap } from '../lib/fabric-scene-snap'
 import { removeActiveObjectFromCanvas } from '../lib/fabric-remove-selection'
 import {
   ensureAvnacArrowEndpoints,
@@ -467,7 +467,6 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
   const [selectionShadowUi, setSelectionShadowUi] =
     useState<FabricShadowUi>(DEFAULT_FABRIC_SHADOW_UI)
   const [selectionShadowActive, setSelectionShadowActive] = useState(false)
-  const [sceneSnapGuides, setSceneSnapGuides] = useState<SceneSnapGuide[]>([])
   const [artboardEmptyHovered, setArtboardEmptyHovered] = useState(false)
   const [editorSidebarPanel, setEditorSidebarPanel] =
     useState<EditorSidebarPanelId | null>(null)
@@ -1400,7 +1399,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
       width: artboardW,
       height: artboardH,
       fabricMod: mod,
-      onGuidesChange: setSceneSnapGuides,
+      guideColor: EDITOR_CANVAS_ACCENT,
     })
 
     canvas.requestRenderAll()
@@ -2681,7 +2680,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
           width: doc.artboard.width,
           height: doc.artboard.height,
           fabricMod: mod,
-          onGuidesChange: setSceneSnapGuides,
+          guideColor: EDITOR_CANVAS_ACCENT,
         })
         canvas.discardActiveObject()
         canvas.requestRenderAll()
@@ -3008,7 +3007,7 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
               width: W,
               height: H,
               fabricMod: mod,
-              onGuidesChange: setSceneSnapGuides,
+              guideColor: EDITOR_CANVAS_ACCENT,
             })
             canvas.calcOffset()
             canvas.requestRenderAll()
@@ -4005,34 +4004,6 @@ const FabricEditor = forwardRef<FabricEditorHandle, FabricEditorProps>(
               }}
             >
               <canvas ref={canvasElRef} className="block max-w-none" />
-              {ready && sceneSnapGuides.length > 0 ? (
-                <div
-                  className="pointer-events-none absolute inset-0 z-[5]"
-                  aria-hidden
-                >
-                  {sceneSnapGuides.map((g, i) =>
-                    g.axis === 'v' ? (
-                      <div
-                        key={`v-${i}-${g.pos}`}
-                        className="absolute bottom-0 top-0 w-px -translate-x-1/2"
-                        style={{
-                          left: `${(g.pos / artboardW) * 100}%`,
-                          backgroundColor: EDITOR_CANVAS_ACCENT,
-                        }}
-                      />
-                    ) : (
-                      <div
-                        key={`h-${i}-${g.pos}`}
-                        className="absolute left-0 right-0 h-px -translate-y-1/2"
-                        style={{
-                          top: `${(g.pos / artboardH) * 100}%`,
-                          backgroundColor: EDITOR_CANVAS_ACCENT,
-                        }}
-                      />
-                    ),
-                  )}
-                </div>
-              ) : null}
             </div>
           </div>
         </div>
