@@ -9,6 +9,7 @@ import { sql } from "./db";
 import { HttpError } from "./lib/http";
 import { authPlugin } from "./plugins/auth";
 import { documentsRoutes } from "./routes/documents";
+import { mediaRoutes } from "./routes/media";
 import { unsplashRoutes } from "./routes/unsplash";
 
 function corsOrigins(value: string): string | string[] {
@@ -73,6 +74,7 @@ const app = new Elysia({ adapter: node() })
     };
   })
   .use(documentsRoutes)
+  .use(mediaRoutes)
   .use(unsplashRoutes)
   .listen(env.PORT);
 
