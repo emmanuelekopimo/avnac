@@ -1,3 +1,5 @@
+import { AiMagicIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { usePostHog } from "posthog-js/react";
@@ -71,6 +73,69 @@ const initialStickers: Sticker[] = [
     size: "clamp(4rem, 7.8vw, 6.2rem)",
   },
 ];
+
+const capabilityCards = [
+  {
+    eyebrow: "Start fast",
+    title: "Open a canvas and begin immediately.",
+    body:
+      "Avnac opens straight into the work. Presets and custom sizes make it easy to set up posters, graphics, and layout studies.",
+  },
+  {
+    eyebrow: "Compose visually",
+    title: "Work with the pieces you actually use.",
+    body:
+      "Text, shapes, images, vector boards, and layer controls are already part of the editor.",
+  },
+  {
+    eyebrow: "Keep going",
+    title: "Stay in the browser and export when ready.",
+    body:
+      "Files autosave in this browser, reopen from the files view, and export to PNG with scale and transparency options.",
+  },
+] as const;
+
+const workflowSteps = [
+  {
+    step: "01",
+    title: "Create the canvas",
+    body:
+      "Pick a preset or set your own dimensions.",
+  },
+  {
+    step: "02",
+    title: "Build with the editor tools",
+    body:
+      "Add text, shapes, images, QR codes, and vector boards, then organize with layers and styling controls.",
+  },
+  {
+    step: "03",
+    title: "Keep working and export",
+    body:
+      "Your work autosaves in this browser, and you can export a PNG when it is ready to leave the canvas.",
+  },
+] as const;
+
+const aiHighlights = [
+  {
+    eyebrow: "Prompt-based",
+    title: "Describe a layout or a single edit.",
+    body:
+      "Magic can respond to full design prompts or smaller changes inside the current composition.",
+  },
+  {
+    eyebrow: "Canvas-aware",
+    title: "It can read the artboard before acting.",
+    body:
+      "The AI tools can inspect canvas size, background, and existing objects before making changes.",
+  },
+  {
+    eyebrow: "Image-aware",
+    title: "It can place images from prompts too.",
+    body:
+      "Magic can search Unsplash, choose a match, and place imagery directly on the artboard.",
+  },
+] as const;
 
 type DragState = {
   mode: "drag" | "rotate";
@@ -170,151 +235,325 @@ function Landing() {
     setActiveStickerId(null);
   };
 
+  const openEditor = () => {
+    posthog.capture("editor_opened", { source: "landing_hero" });
+    setNewCanvasOpen(true);
+  };
+
   return (
-    <main className="hero-page relative flex min-h-[100dvh] flex-col justify-center overflow-hidden px-5 py-16 sm:px-10 sm:py-20 lg:px-16 lg:py-24">
-      <div className="hero-bg-orb hero-bg-orb-a" aria-hidden="true" />
-      <div className="hero-bg-orb hero-bg-orb-b" aria-hidden="true" />
-      <div className="hero-grid" aria-hidden="true" />
-      <div ref={stickerLayerRef} className="hero-sticker-layer" aria-hidden="true">
-        {stickers.map((sticker) => (
-          <div
-            key={sticker.id}
-            className={`hero-sticker-frame ${activeStickerId === sticker.id ? "is-active" : ""}`}
-            style={{
-              left: `${sticker.x}%`,
-              top: `${sticker.y}%`,
-              width: sticker.size,
-              transform: `rotate(${sticker.rotation}deg)`,
-              zIndex: activeStickerId === sticker.id ? 3 : 1,
-            }}
-            onPointerDown={(e) => {
-              const layer = stickerLayerRef.current;
-              if (!layer) {
-                return;
-              }
-
-              const layerRect = layer.getBoundingClientRect();
-              const stickerLeft =
-                (sticker.x / 100) * Math.max(layerRect.width, 1);
-              const stickerTop =
-                (sticker.y / 100) * Math.max(layerRect.height, 1);
-
-              dragStateRef.current = {
-                mode: "drag",
-                id: sticker.id,
-                pointerId: e.pointerId,
-                startClientX: e.clientX,
-                startClientY: e.clientY,
-                startLeft: stickerLeft,
-                startTop: stickerTop,
-                startRotation: sticker.rotation,
-                centerX: e.currentTarget.getBoundingClientRect().left + e.currentTarget.offsetWidth / 2,
-                centerY: e.currentTarget.getBoundingClientRect().top + e.currentTarget.offsetHeight / 2,
-                startPointerAngle: 0,
-                width: e.currentTarget.offsetWidth,
-                height: e.currentTarget.offsetHeight,
-              };
-              setActiveStickerId(sticker.id);
-              e.currentTarget.setPointerCapture(e.pointerId);
-            }}
-            onPointerMove={(e) => {
-              updateStickerPosition(sticker.id, e.clientX, e.clientY);
-            }}
-            onPointerUp={(e) => {
-              endDrag(e.pointerId, e.target);
-            }}
-            onPointerCancel={(e) => {
-              endDrag(e.pointerId, e.target);
-            }}
-          >
-            <span className="hero-sticker-selection" />
-            <span className="hero-sticker-handle hero-sticker-handle-nw" />
-            <span
-              className="hero-sticker-rotation-arm"
+    <main className="landing-page">
+      <section className="hero-page relative flex min-h-[100dvh] flex-col justify-center overflow-hidden px-5 py-16 sm:px-10 sm:py-20 lg:px-16 lg:py-24">
+        <div className="hero-bg-orb hero-bg-orb-a" aria-hidden="true" />
+        <div className="hero-bg-orb hero-bg-orb-b" aria-hidden="true" />
+        <div className="hero-grid" aria-hidden="true" />
+        <div ref={stickerLayerRef} className="hero-sticker-layer" aria-hidden="true">
+          {stickers.map((sticker) => (
+            <div
+              key={sticker.id}
+              className={`hero-sticker-frame ${activeStickerId === sticker.id ? "is-active" : ""}`}
+              style={{
+                left: `${sticker.x}%`,
+                top: `${sticker.y}%`,
+                width: sticker.size,
+                transform: `rotate(${sticker.rotation}deg)`,
+                zIndex: activeStickerId === sticker.id ? 3 : 1,
+              }}
               onPointerDown={(e) => {
-                e.stopPropagation();
-                const frame = e.currentTarget.parentElement;
-                if (!frame) {
+                const layer = stickerLayerRef.current;
+                if (!layer) {
                   return;
                 }
 
-                const frameRect = frame.getBoundingClientRect();
-                const centerX = frameRect.left + frameRect.width / 2;
-                const centerY = frameRect.top + frameRect.height / 2;
+                const layerRect = layer.getBoundingClientRect();
+                const stickerLeft =
+                  (sticker.x / 100) * Math.max(layerRect.width, 1);
+                const stickerTop =
+                  (sticker.y / 100) * Math.max(layerRect.height, 1);
 
                 dragStateRef.current = {
-                  mode: "rotate",
+                  mode: "drag",
                   id: sticker.id,
                   pointerId: e.pointerId,
                   startClientX: e.clientX,
                   startClientY: e.clientY,
-                  startLeft: 0,
-                  startTop: 0,
+                  startLeft: stickerLeft,
+                  startTop: stickerTop,
                   startRotation: sticker.rotation,
-                  centerX,
-                  centerY,
-                  startPointerAngle: Math.atan2(
-                    e.clientY - centerY,
-                    e.clientX - centerX,
-                  ),
-                  width: frameRect.width,
-                  height: frameRect.height,
+                  centerX:
+                    e.currentTarget.getBoundingClientRect().left +
+                    e.currentTarget.offsetWidth / 2,
+                  centerY:
+                    e.currentTarget.getBoundingClientRect().top +
+                    e.currentTarget.offsetHeight / 2,
+                  startPointerAngle: 0,
+                  width: e.currentTarget.offsetWidth,
+                  height: e.currentTarget.offsetHeight,
                 };
                 setActiveStickerId(sticker.id);
-                frame.setPointerCapture(e.pointerId);
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                updateStickerPosition(sticker.id, e.clientX, e.clientY);
+              }}
+              onPointerUp={(e) => {
+                endDrag(e.pointerId, e.target);
+              }}
+              onPointerCancel={(e) => {
+                endDrag(e.pointerId, e.target);
               }}
             >
-              <span className="hero-sticker-rotation-handle" />
-            </span>
-            <span className="hero-sticker-handle hero-sticker-handle-ne" />
-            <span className="hero-sticker-handle hero-sticker-handle-e" />
-            <span className="hero-sticker-handle hero-sticker-handle-se" />
-            <span className="hero-sticker-handle hero-sticker-handle-s" />
-            <span className="hero-sticker-handle hero-sticker-handle-sw" />
-            <span className="hero-sticker-handle hero-sticker-handle-w" />
-            <img
-              src={sticker.src}
-              alt={sticker.label}
-              className="hero-sticker-image"
-              loading="lazy"
-              decoding="async"
-              draggable={false}
-            />
-          </div>
-        ))}
-      </div>
-      <div className="relative z-[1] mx-auto w-full max-w-3xl">
-        <div className="rise-in text-left">
-          <h1 className="display-title hero-headline mb-8 font-medium text-balance text-[var(--text)] sm:mb-10 lg:mb-12">
-            Design in the browser,
-            <br />
-            openly.
-          </h1>
-          <p className="mb-10 max-w-xl text-lg leading-[1.6] text-[var(--text-muted)] sm:mb-12 sm:text-xl sm:leading-[1.55] lg:text-[1.375rem] lg:leading-[1.5]">
-            Open-source canvas for layouts and graphics.
-          </p>
-          <div className="flex flex-wrap items-center gap-4">
-            <button
-              type="button"
-              className="inline-flex min-h-12 cursor-pointer items-center justify-center rounded-full border-0 bg-[var(--text)] px-10 py-3.5 text-base font-medium text-white hover:bg-[#262626] sm:min-h-14 sm:px-12 sm:py-4 sm:text-[1.0625rem]"
-              onClick={() => {
-                posthog.capture("editor_opened", { source: "landing_hero" });
-                setNewCanvasOpen(true);
-              }}
-            >
-              Open editor
-            </button>
-            <a
-              href="https://github.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex min-h-12 items-center justify-center rounded-full border border-black/[0.14] bg-white/70 px-8 py-3.5 text-base font-medium text-[var(--text)] no-underline backdrop-blur-sm hover:border-black/[0.22] hover:bg-white sm:min-h-14 sm:px-10 sm:py-4 sm:text-[1.0625rem]"
-            >
-              GitHub
-            </a>
+              <span className="hero-sticker-selection" />
+              <span className="hero-sticker-handle hero-sticker-handle-nw" />
+              <span
+                className="hero-sticker-rotation-arm"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const frame = e.currentTarget.parentElement;
+                  if (!frame) {
+                    return;
+                  }
+
+                  const frameRect = frame.getBoundingClientRect();
+                  const centerX = frameRect.left + frameRect.width / 2;
+                  const centerY = frameRect.top + frameRect.height / 2;
+
+                  dragStateRef.current = {
+                    mode: "rotate",
+                    id: sticker.id,
+                    pointerId: e.pointerId,
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    startLeft: 0,
+                    startTop: 0,
+                    startRotation: sticker.rotation,
+                    centerX,
+                    centerY,
+                    startPointerAngle: Math.atan2(
+                      e.clientY - centerY,
+                      e.clientX - centerX,
+                    ),
+                    width: frameRect.width,
+                    height: frameRect.height,
+                  };
+                  setActiveStickerId(sticker.id);
+                  frame.setPointerCapture(e.pointerId);
+                }}
+              >
+                <span className="hero-sticker-rotation-handle" />
+              </span>
+              <span className="hero-sticker-handle hero-sticker-handle-ne" />
+              <span className="hero-sticker-handle hero-sticker-handle-e" />
+              <span className="hero-sticker-handle hero-sticker-handle-se" />
+              <span className="hero-sticker-handle hero-sticker-handle-s" />
+              <span className="hero-sticker-handle hero-sticker-handle-sw" />
+              <span className="hero-sticker-handle hero-sticker-handle-w" />
+              <img
+                src={sticker.src}
+                alt={sticker.label}
+                className="hero-sticker-image"
+                loading="lazy"
+                decoding="async"
+                draggable={false}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="relative z-[1] mx-auto w-full max-w-3xl">
+          <div className="rise-in text-left">
+            <h1 className="display-title hero-headline mb-8 font-medium text-balance text-[var(--text)] sm:mb-10 lg:mb-12">
+              Design in the browser,
+              <br />
+              openly.
+            </h1>
+            <p className="mb-10 max-w-xl text-lg leading-[1.6] text-[var(--text-muted)] sm:mb-12 sm:text-xl sm:leading-[1.55] lg:text-[1.375rem] lg:leading-[1.5]">
+              Avnac is an open canvas for layouts, posters, and graphics.
+            </p>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                className="bg-black text-white inline-flex min-h-12 cursor-pointer items-center justify-center rounded-full border-0 px-10 py-3.5 text-base font-medium sm:min-h-14 sm:px-12 sm:py-4 sm:text-[1.0625rem]"
+                onClick={openEditor}
+              >
+                Open editor
+              </button>
+              <a
+                href="https://github.com/akinloluwami/avnac"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-12 items-center justify-center rounded-full border border-black/[0.14] bg-white/70 px-8 py-3.5 text-base font-medium text-[var(--text)] no-underline backdrop-blur-sm hover:border-black/[0.22] hover:bg-white sm:min-h-14 sm:px-10 sm:py-4 sm:text-[1.0625rem]"
+              >
+                GitHub
+              </a>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <section className="landing-section landing-section-tight">
+        <div className="landing-container">
+          <div className="landing-section-heading">
+            <div className="landing-kicker">Inside the editor</div>
+            <h2 className="display-title landing-section-title">
+              For posters, layouts, and graphics.
+            </h2>
+            <p className="landing-section-copy">
+              A lightweight canvas for composing visual work in the browser.
+            </p>
+          </div>
+
+          <div className="landing-feature-grid">
+            <article className="landing-feature-spotlight">
+              <div className="landing-feature-window">
+                <div className="landing-feature-toolbar">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <div className="landing-feature-canvas">
+                  <div className="landing-feature-card landing-feature-card-a">
+                    <span className="landing-feature-chip">Canvas</span>
+                    <strong>Preset or custom artboards</strong>
+                    <p>Start from common sizes or enter exact dimensions.</p>
+                  </div>
+                  <div className="landing-feature-card landing-feature-card-b">
+                    <span className="landing-feature-chip">Assets</span>
+                    <strong>Your own assets or photos from Unsplash</strong>
+                    <p>Bring imagery onto the artboard without leaving the editor.</p>
+                  </div>
+                  <div className="landing-feature-card landing-feature-card-c">
+                    <span className="landing-feature-chip">Controls</span>
+                    <strong>Layers, blur, crop, vector boards</strong>
+                    <p>Use the browser editor to refine and organize elements.</p>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <div className="landing-feature-list">
+              {capabilityCards.map((feature) => (
+                <article key={feature.title} className="landing-copy-card">
+                  <div className="landing-kicker">{feature.eyebrow}</div>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.body}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section">
+        <div className="landing-container">
+          <div className="landing-process-shell">
+            <div className="landing-process-header">
+              <div>
+                <div className="landing-kicker landing-kicker-inverse">
+                  Workflow
+                </div>
+                <h2 className="display-title landing-process-title">
+                  From blank canvas to finished graphic.
+                </h2>
+              </div>
+              <p>
+                The flow is simple: create a file, build the composition, keep
+                iterating in the browser, and export when it is ready.
+              </p>
+            </div>
+
+            <div className="landing-process-grid">
+              {workflowSteps.map((step) => (
+                <article key={step.step} className="landing-process-card">
+                  <span>{step.step}</span>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section">
+        <div className="landing-container">
+          <div className="landing-ai-shell">
+            <div className="landing-ai-header">
+              <div className="landing-kicker landing-ai-kicker">
+                <HugeiconsIcon
+                  icon={AiMagicIcon}
+                  size={14}
+                  strokeWidth={1.9}
+                  className="landing-ai-kicker-icon"
+                />
+                <span>AI</span>
+              </div>
+              <h2 className="display-title landing-section-title">
+                Magic can turn prompts into edits on the canvas.
+              </h2>
+              <p className="landing-section-copy">
+                The editor includes a Magic panel for prompt-based changes. It
+                can work from broad layout instructions or smaller refinement
+                requests inside the current design.
+              </p>
+            </div>
+
+            <div className="landing-ai-grid">
+              <article className="landing-ai-hero-card">
+                <div className="landing-ai-hero-label">Magic beta</div>
+                <p>
+                  Ask for a poster, a headline treatment, a new element, or a
+                  change to what is already on the board.
+                </p>
+                <div className="landing-ai-prompt-list">
+                  <span>“Design a bold typographic poster for a jazz night.”</span>
+                  <span>“Find an Unsplash image and place it behind the title.”</span>
+                  <span>“Tighten the layout and make the headline larger.”</span>
+                </div>
+              </article>
+
+              <div className="landing-ai-card-list">
+                {aiHighlights.map((item) => (
+                  <article key={item.title} className="landing-ai-card">
+                    <div className="landing-kicker">{item.eyebrow}</div>
+                    <h3>{item.title}</h3>
+                    <p>{item.body}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-section-last">
+        <div className="landing-container">
+          <div className="landing-cta-band landing-cta-band-only">
+            <div>
+              <div className="landing-kicker">Ready to make something</div>
+              <h2 className="display-title landing-cta-title">
+                Open a canvas and make something.
+              </h2>
+            </div>
+            <div className="landing-cta-actions">
+              <button
+                type="button"
+                className="bg-black text-white min-h-12 cursor-pointer items-center justify-center rounded-full border-0 px-10 py-3.5 text-base font-medium sm:min-h-14 sm:px-12 sm:py-4 sm:text-[1.0625rem]"
+                onClick={openEditor}
+              >
+                Open editor
+              </button>
+              <a
+                href="https://github.com/akinloluwami/avnac"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-12 items-center justify-center rounded-full border border-black/[0.14] bg-white/85 px-8 py-3.5 text-base font-medium text-[var(--text)] no-underline hover:border-black/[0.22] hover:bg-white sm:min-h-14 sm:px-10 sm:py-4 sm:text-[1.0625rem]"
+              >
+                View source
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <NewCanvasDialog
         open={newCanvasOpen}
         onClose={() => setNewCanvasOpen(false)}
