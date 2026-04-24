@@ -3,6 +3,7 @@ import { loadCanvasGoogleFontsAndRelayout } from './avnac-canvas-google-fonts'
 import { ensureAvnacLayerId } from './ensure-avnac-layer-id'
 import { linearGradientForBox } from './fabric-linear-gradient'
 import { migrateLegacyImageBlurFilters, installAvnacObjectCanvasBlur } from './avnac-object-blur'
+import { normalizeCanvasImagesForExport } from './avnac-image-proxy'
 import { refreshAllVectorBoardInstances } from './avnac-vector-board-fabric'
 import { loadVectorBoardDocs } from './avnac-vector-boards-storage'
 
@@ -97,6 +98,7 @@ export async function renderAvnacDocumentPreviewDataUrl(
     }
 
     await staticCanvas.loadFromJSON(doc.fabric)
+    await normalizeCanvasImagesForExport(staticCanvas, mod)
     for (const o of staticCanvas.getObjects()) ensureAvnacLayerId(o)
     try {
       migrateLegacyImageBlurFilters(staticCanvas, mod)
